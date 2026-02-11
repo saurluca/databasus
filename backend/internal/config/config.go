@@ -123,6 +123,10 @@ type EnvVariables struct {
 
 	// Application URL (optional) - used for email links
 	DatabasusURL string `env:"DATABASUS_URL"`
+
+	// Backup table filtering (global, applies to all PostgreSQL backups)
+	BackupExcludeTables []string // from BACKUP_EXCLUDE_TABLES env var
+	BackupIncludeTables []string // from BACKUP_INCLUDE_TABLES env var
 }
 
 var (
@@ -271,6 +275,22 @@ func loadEnvVariables() {
 
 	if env.TestLocalhost == "" {
 		env.TestLocalhost = "localhost"
+	}
+
+	// Backup table filtering (global, applies to all PostgreSQL backups)
+	if val := os.Getenv("BACKUP_EXCLUDE_TABLES"); val != "" {
+		for _, s := range strings.Split(val, ",") {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				env.BackupExcludeTables = append(env.BackupExcludeTables, trimmed)
+			}
+		}
+	}
+	if val := os.Getenv("BACKUP_INCLUDE_TABLES"); val != "" {
+		for _, s := range strings.Split(val, ",") {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				env.BackupIncludeTables = append(env.BackupIncludeTables, trimmed)
+			}
+		}
 	}
 
 	// Valkey

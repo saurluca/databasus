@@ -17,3 +17,10 @@ services:
       - ./databasus-data:/databasus-data
     container_name: databasus-local
     restart: unless-stopped
+    environment:
+      # Comma-separated list of tables to exclude from all PostgreSQL backups
+      # Supports pg_dump patterns (e.g. "public.logs_*,public.temp_*")
+      # BACKUP_EXCLUDE_TABLES: "schema.table1,schema.table2"
+      #
+      # Comma-separated list of tables to include (backup ONLY these tables)
+      # BACKUP_INCLUDE_TABLES: "public.important_table"
