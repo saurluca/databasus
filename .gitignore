@@ -14,3 +14,6 @@ node_modules/
 .DS_Store
 /scripts
 .vscode/settings.json
+
+docker-compose.server.yml
+docker-compose.yml
