@@ -1,0 +1,22 @@
+version: "3"
+
+# Use this file on your server to run Databasus.
+# Pull the latest image and start:
+#   docker compose -f docker-compose.server.yml pull
+#   docker compose -f docker-compose.server.yml up -d
+
+services:
+  databasus:
+    image: ghcr.io/saurluca/databasus:latest
+    ports:
+      - "4005:4005"
+    volumes:
+      - databasus-data:/databasus-data
+    container_name: databasus
+    restart: unless-stopped
+    environment:
+      # Comma-separated list of tables to exclude from all PostgreSQL backups
+      BACKUP_EXCLUDE_TABLES: 'public."Artikelstatistik",public."Liefertreue",public."Ware_Artikel_Woche",public."Aggregation_Filiale_Artikel_Woche",public."silk_sqlquery",public."silk_response",public."Sequence_Artikelstatistik",public."Verfuegbarkeit_Monat",public."Verfuegbarkeit_Woche",public."Aggregation_Filiale_Artikel_Monat",public."Ware_Artikel_Monat",public."ABC_Gesamt",public."Korrekturen",public."Kundenstatistik",public."Aggregation_Artikel_Tag",public."Personal_Planung",public."Ware_Warengruppe_Woche",public."Sequence_Kundenstatistik",public."Personal_Stempelzeit",public."ABC",public."Aggregation_Artikel_Woche",public."Ware_Warengruppe_Monat",public."silk_request",public."Aggregation_Filiale_Tag"'
+
+volumes:
+  databasus-data:
