@@ -343,14 +343,28 @@ func (uc *CreatePostgresqlBackupUsecase) buildPgDumpArgs(pg *pgtypes.PostgresqlD
 	}
 
 	for _, table := range config.GetEnv().BackupExcludeTables {
-		args = append(args, "-T", strings.TrimSpace(table))
+		args = append(args, "-T", normalizePgDumpTablePattern(strings.TrimSpace(table)))
 	}
 	for _, table := range config.GetEnv().BackupIncludeTables {
-		args = append(args, "-t", strings.TrimSpace(table))
+		args = append(args, "-t", normalizePgDumpTablePattern(strings.TrimSpace(table)))
 	}
 
 	compressionArgs := uc.getCompressionArgs(pg.Version)
 	return append(args, compressionArgs...)
+}
+
+// normalizePgDumpTablePattern removes quotes around patterns that contain wildcards (* or ?).
+// In PostgreSQL, quoted identifiers treat * and ? as literal characters, so public."Ware_*"
+// would match only a table literally named "Ware_*", not Ware_Monat_1, Ware_Woche_1, etc.
+// By removing quotes when wildcards are present, pg_dump's pattern matching works correctly.
+// Case is preserved: pg_dump uses case-sensitive fnmatch-style matching, so public.Ware_*
+// matches public.Ware_Monat_1 but not public.ware_monat_1. Use the correct case in the pattern.
+func normalizePgDumpTablePattern(pattern string) string {
+	if !strings.Contains(pattern, "*") && !strings.Contains(pattern, "?") {
+		return pattern
+	}
+
+	return strings.ReplaceAll(pattern, `"`, "")
 }
 
 func (uc *CreatePostgresqlBackupUsecase) getCompressionArgs(

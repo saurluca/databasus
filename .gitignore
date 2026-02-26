@@ -1,3 +1,5 @@
+*.dump
+
 ansible/
 postgresus_data/
 postgresus-data/
