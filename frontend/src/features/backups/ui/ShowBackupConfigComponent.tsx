@@ -6,7 +6,12 @@ import { useMemo } from 'react';
 import { useEffect, useState } from 'react';
 
 import { IS_CLOUD } from '../../../constants';
-import { type BackupConfig, BackupEncryption, backupConfigApi } from '../../../entity/backups';
+import {
+  type BackupConfig,
+  BackupEncryption,
+  RetentionPolicyType,
+  backupConfigApi,
+} from '../../../entity/backups';
 import { BackupNotificationType } from '../../../entity/backups/model/BackupNotificationType';
 import type { Database } from '../../../entity/databases';
 import { Period } from '../../../entity/databases/model/Period';
@@ -60,10 +65,21 @@ const notificationLabels = {
   [BackupNotificationType.BackupSuccess]: 'Backup success',
 };
 
+const formatGfsRetention = (config: BackupConfig): string => {
+  const parts: string[] = [];
+
+  if (config.retentionGfsHours > 0) parts.push(`${config.retentionGfsHours} hourly`);
+  if (config.retentionGfsDays > 0) parts.push(`${config.retentionGfsDays} daily`);
+  if (config.retentionGfsWeeks > 0) parts.push(`${config.retentionGfsWeeks} weekly`);
+  if (config.retentionGfsMonths > 0) parts.push(`${config.retentionGfsMonths} monthly`);
+  if (config.retentionGfsYears > 0) parts.push(`${config.retentionGfsYears} yearly`);
+
+  return parts.length > 0 ? parts.join(', ') : 'Not configured';
+};
+
 export const ShowBackupConfigComponent = ({ database }: Props) => {
   const [backupConfig, setBackupConfig] = useState<BackupConfig>();
 
-  // Detect user's preferred time format (12-hour vs 24-hour)
   const timeFormat = useMemo(() => {
     const is12Hour = getIs12Hour();
     return {
@@ -92,7 +108,6 @@ export const ShowBackupConfigComponent = ({ database }: Props) => {
 
   const formattedTime = localTime ? localTime.format(timeFormat.format) : '';
 
-  // Convert UTC weekday/day-of-month to local equivalents for display
   const displayedWeekday: number | undefined =
     backupInterval?.interval === IntervalType.WEEKLY &&
     backupInterval.weekday &&
@@ -106,6 +121,8 @@ export const ShowBackupConfigComponent = ({ database }: Props) => {
     backupInterval.timeOfDay
       ? getLocalDayOfMonth(backupInterval.dayOfMonth, backupInterval.timeOfDay)
       : backupInterval?.dayOfMonth;
+
+  const retentionPolicyType = backupConfig.retentionPolicyType ?? RetentionPolicyType.TimePeriod;
 
   return (
     <div>
@@ -193,8 +210,27 @@ export const ShowBackupConfigComponent = ({ database }: Props) => {
           )}
 
           <div className="mb-1 flex w-full items-center">
-            <div className="min-w-[150px]">Store period</div>
-            <div>{backupConfig.storePeriod ? periodLabels[backupConfig.storePeriod] : ''}</div>
+            <div className="min-w-[150px]">Retention policy</div>
+            <div className="flex items-center gap-1">
+              {retentionPolicyType === RetentionPolicyType.TimePeriod && (
+                <span>
+                  {backupConfig.retentionTimePeriod
+                    ? periodLabels[backupConfig.retentionTimePeriod]
+                    : ''}
+                </span>
+              )}
+              {retentionPolicyType === RetentionPolicyType.Count && (
+                <span>Keep last {backupConfig.retentionCount} backups</span>
+              )}
+              {retentionPolicyType === RetentionPolicyType.GFS && (
+                <span className="flex items-center gap-1">
+                  {formatGfsRetention(backupConfig)}
+                  <Tooltip title="Grandfather-Father-Son rotation: keep the last N hourly, daily, weekly, monthly and yearly backups.">
+                    <InfoCircleOutlined style={{ color: 'gray' }} />
+                  </Tooltip>
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="mb-1 flex w-full items-center">

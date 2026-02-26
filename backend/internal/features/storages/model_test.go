@@ -229,12 +229,12 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 					context.Background(),
 					encryptor,
 					logger.GetLogger(),
-					fileID,
+					fileID.String(),
 					bytes.NewReader(fileData),
 				)
 				require.NoError(t, err, "SaveFile should succeed")
 
-				file, err := tc.storage.GetFile(encryptor, fileID)
+				file, err := tc.storage.GetFile(encryptor, fileID.String())
 				assert.NoError(t, err, "GetFile should succeed")
 				defer file.Close()
 
@@ -252,15 +252,15 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 					context.Background(),
 					encryptor,
 					logger.GetLogger(),
-					fileID,
+					fileID.String(),
 					bytes.NewReader(fileData),
 				)
 				require.NoError(t, err, "SaveFile should succeed")
 
-				err = tc.storage.DeleteFile(encryptor, fileID)
+				err = tc.storage.DeleteFile(encryptor, fileID.String())
 				assert.NoError(t, err, "DeleteFile should succeed")
 
-				file, err := tc.storage.GetFile(encryptor, fileID)
+				file, err := tc.storage.GetFile(encryptor, fileID.String())
 				assert.Error(t, err, "GetFile should fail for non-existent file")
 				if file != nil {
 					file.Close()
@@ -270,7 +270,7 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 			t.Run("Test_TestDeleteNonExistentFile_DoesNotError", func(t *testing.T) {
 				// Try to delete a non-existent file
 				nonExistentID := uuid.New()
-				err := tc.storage.DeleteFile(encryptor, nonExistentID)
+				err := tc.storage.DeleteFile(encryptor, nonExistentID.String())
 				assert.NoError(t, err, "DeleteFile should not error for non-existent file")
 			})
 		})

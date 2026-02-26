@@ -25,13 +25,14 @@ type MariadbDatabase struct {
 
 	Version tools.MariadbVersion `json:"version" gorm:"type:text;not null"`
 
-	Host       string  `json:"host"       gorm:"type:text;not null"`
-	Port       int     `json:"port"       gorm:"type:int;not null"`
-	Username   string  `json:"username"   gorm:"type:text;not null"`
-	Password   string  `json:"password"   gorm:"type:text;not null"`
-	Database   *string `json:"database"   gorm:"type:text"`
-	IsHttps    bool    `json:"isHttps"    gorm:"type:boolean;default:false"`
-	Privileges string  `json:"privileges" gorm:"column:privileges;type:text;not null;default:''"`
+	Host            string  `json:"host"            gorm:"type:text;not null"`
+	Port            int     `json:"port"            gorm:"type:int;not null"`
+	Username        string  `json:"username"        gorm:"type:text;not null"`
+	Password        string  `json:"password"        gorm:"type:text;not null"`
+	Database        *string `json:"database"        gorm:"type:text"`
+	IsHttps         bool    `json:"isHttps"         gorm:"type:boolean;default:false"`
+	IsExcludeEvents bool    `json:"isExcludeEvents" gorm:"type:boolean;default:false"`
+	Privileges      string  `json:"privileges"      gorm:"column:privileges;type:text;not null;default:''"`
 }
 
 func (m *MariadbDatabase) TableName() string {
@@ -124,6 +125,7 @@ func (m *MariadbDatabase) Update(incoming *MariadbDatabase) {
 	m.Username = incoming.Username
 	m.Database = incoming.Database
 	m.IsHttps = incoming.IsHttps
+	m.IsExcludeEvents = incoming.IsExcludeEvents
 	m.Privileges = incoming.Privileges
 
 	if incoming.Password != "" {

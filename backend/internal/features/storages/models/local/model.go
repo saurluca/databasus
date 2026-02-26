@@ -36,7 +36,7 @@ func (l *LocalStorage) SaveFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	fileID uuid.UUID,
+	fileName string,
 	file io.Reader,
 ) error {
 	select {
@@ -45,7 +45,7 @@ func (l *LocalStorage) SaveFile(
 	default:
 	}
 
-	logger.Info("Starting to save file to local storage", "fileId", fileID.String())
+	logger.Info("Starting to save file to local storage", "fileName", fileName)
 
 	err := files_utils.EnsureDirectories([]string{
 		config.GetEnv().TempFolder,
@@ -54,15 +54,15 @@ func (l *LocalStorage) SaveFile(
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
 
-	tempFilePath := filepath.Join(config.GetEnv().TempFolder, fileID.String())
-	logger.Debug("Creating temp file", "fileId", fileID.String(), "tempPath", tempFilePath)
+	tempFilePath := filepath.Join(config.GetEnv().TempFolder, fileName)
+	logger.Debug("Creating temp file", "fileName", fileName, "tempPath", tempFilePath)
 
 	tempFile, err := os.Create(tempFilePath)
 	if err != nil {
 		logger.Error(
 			"Failed to create temp file",
-			"fileId",
-			fileID.String(),
+			"fileName",
+			fileName,
 			"tempPath",
 			tempFilePath,
 			"error",
@@ -74,29 +74,29 @@ func (l *LocalStorage) SaveFile(
 		_ = tempFile.Close()
 	}()
 
-	logger.Debug("Copying file data to temp file", "fileId", fileID.String())
+	logger.Debug("Copying file data to temp file", "fileName", fileName)
 	_, err = copyWithContext(ctx, tempFile, file)
 	if err != nil {
-		logger.Error("Failed to write to temp file", "fileId", fileID.String(), "error", err)
+		logger.Error("Failed to write to temp file", "fileName", fileName, "error", err)
 		return fmt.Errorf("failed to write to temp file: %w", err)
 	}
 
 	if err = tempFile.Sync(); err != nil {
-		logger.Error("Failed to sync temp file", "fileId", fileID.String(), "error", err)
+		logger.Error("Failed to sync temp file", "fileName", fileName, "error", err)
 		return fmt.Errorf("failed to sync temp file: %w", err)
 	}
 
 	// Close the temp file explicitly before moving it (required on Windows)
 	if err = tempFile.Close(); err != nil {
-		logger.Error("Failed to close temp file", "fileId", fileID.String(), "error", err)
+		logger.Error("Failed to close temp file", "fileName", fileName, "error", err)
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	finalPath := filepath.Join(config.GetEnv().DataFolder, fileID.String())
+	finalPath := filepath.Join(config.GetEnv().DataFolder, fileName)
 	logger.Debug(
 		"Moving file from temp to final location",
-		"fileId",
-		fileID.String(),
+		"fileName",
+		fileName,
 		"finalPath",
 		finalPath,
 	)
@@ -105,8 +105,8 @@ func (l *LocalStorage) SaveFile(
 	if err = os.Rename(tempFilePath, finalPath); err != nil {
 		logger.Error(
 			"Failed to move file from temp to backups",
-			"fileId",
-			fileID.String(),
+			"fileName",
+			fileName,
 			"tempPath",
 			tempFilePath,
 			"finalPath",
@@ -119,8 +119,8 @@ func (l *LocalStorage) SaveFile(
 
 	logger.Info(
 		"Successfully saved file to local storage",
-		"fileId",
-		fileID.String(),
+		"fileName",
+		fileName,
 		"finalPath",
 		finalPath,
 	)
@@ -130,12 +130,12 @@ func (l *LocalStorage) SaveFile(
 
 func (l *LocalStorage) GetFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) (io.ReadCloser, error) {
-	filePath := filepath.Join(config.GetEnv().DataFolder, fileID.String())
+	filePath := filepath.Join(config.GetEnv().DataFolder, fileName)
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("file not found: %s", fileID.String())
+		return nil, fmt.Errorf("file not found: %s", fileName)
 	}
 
 	file, err := os.Open(filePath)
@@ -146,8 +146,8 @@ func (l *LocalStorage) GetFile(
 	return file, nil
 }
 
-func (l *LocalStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileID uuid.UUID) error {
-	filePath := filepath.Join(config.GetEnv().DataFolder, fileID.String())
+func (l *LocalStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileName string) error {
+	filePath := filepath.Join(config.GetEnv().DataFolder, fileName)
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return nil

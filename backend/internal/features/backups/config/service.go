@@ -227,7 +227,8 @@ func (s *BackupConfigService) initializeDefaultConfig(
 	_, err = s.backupConfigRepository.Save(&BackupConfig{
 		DatabaseID:            databaseID,
 		IsBackupsEnabled:      false,
-		StorePeriod:           plan.MaxStoragePeriod,
+		RetentionPolicyType:   RetentionPolicyTypeTimePeriod,
+		RetentionTimePeriod:   plan.MaxStoragePeriod,
 		MaxBackupSizeMB:       plan.MaxBackupSizeMB,
 		MaxBackupsTotalSizeMB: plan.MaxBackupsTotalSizeMB,
 		BackupInterval: &intervals.Interval{

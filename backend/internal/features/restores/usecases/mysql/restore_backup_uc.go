@@ -105,7 +105,7 @@ func (uc *RestoreMysqlBackupUsecase) restoreFromStorage(
 	storage *storages.Storage,
 	myConfig *mysqltypes.MysqlDatabase,
 ) error {
-	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Minute)
+	ctx, cancel := context.WithTimeout(parentCtx, 23*time.Hour)
 	defer cancel()
 
 	go func() {
@@ -140,7 +140,7 @@ func (uc *RestoreMysqlBackupUsecase) restoreFromStorage(
 	defer func() { _ = os.RemoveAll(filepath.Dir(myCnfFile)) }()
 
 	// Stream backup directly from storage
-	rawReader, err := storage.GetFile(fieldEncryptor, backup.ID)
+	rawReader, err := storage.GetFile(fieldEncryptor, backup.FileName)
 	if err != nil {
 		return fmt.Errorf("failed to get backup file from storage: %w", err)
 	}

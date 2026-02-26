@@ -726,41 +726,28 @@ func Test_InviteUserToWorkspace_MembershipReceivedAfterSignUp(t *testing.T) {
 
 	assert.Equal(t, workspaces_dto.AddStatusInvited, inviteResponse.Status)
 
-	// 3. Sign up the invited user
+	// 3. Sign up the invited user (now returns token directly)
 	signUpRequest := users_dto.SignUpRequestDTO{
 		Email:    inviteEmail,
 		Password: "testpassword123",
 		Name:     "Invited User",
 	}
 
-	resp := test_utils.MakePostRequest(
+	var signInResponse users_dto.SignInResponseDTO
+	test_utils.MakePostRequestAndUnmarshal(
 		t,
 		router,
 		"/api/v1/users/signup",
 		"",
 		signUpRequest,
 		http.StatusOK,
-	)
-	assert.Contains(t, string(resp.Body), "User created successfully")
-
-	// 4. Sign in the newly registered user
-	signInRequest := users_dto.SignInRequestDTO{
-		Email:    inviteEmail,
-		Password: "testpassword123",
-	}
-
-	var signInResponse users_dto.SignInResponseDTO
-	test_utils.MakePostRequestAndUnmarshal(
-		t,
-		router,
-		"/api/v1/users/signin",
-		"",
-		signInRequest,
-		http.StatusOK,
 		&signInResponse,
 	)
 
-	// 5. Verify user is automatically added as member to workspace
+	assert.NotEmpty(t, signInResponse.Token)
+	assert.Equal(t, inviteEmail, signInResponse.Email)
+
+	// 4. Verify user is automatically added as member to workspace
 	var membersResponse workspaces_dto.GetMembersResponseDTO
 	test_utils.MakeGetRequestAndUnmarshal(
 		t,

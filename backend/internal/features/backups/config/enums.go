@@ -13,3 +13,11 @@ const (
 	BackupEncryptionNone      BackupEncryption = "NONE"
 	BackupEncryptionEncrypted BackupEncryption = "ENCRYPTED"
 )
+
+type RetentionPolicyType string
+
+const (
+	RetentionPolicyTypeTimePeriod RetentionPolicyType = "TIME_PERIOD"
+	RetentionPolicyTypeCount      RetentionPolicyType = "COUNT"
+	RetentionPolicyTypeGFS        RetentionPolicyType = "GFS"
+)

@@ -68,7 +68,7 @@ func (s *AzureBlobStorage) SaveFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	fileID uuid.UUID,
+	fileName string,
 	file io.Reader,
 ) error {
 	select {
@@ -82,7 +82,7 @@ func (s *AzureBlobStorage) SaveFile(
 		return err
 	}
 
-	blobName := s.buildBlobName(fileID.String())
+	blobName := s.buildBlobName(fileName)
 	blockBlobClient := client.ServiceClient().
 		NewContainerClient(s.ContainerName).
 		NewBlockBlobClient(blobName)
@@ -157,14 +157,14 @@ func (s *AzureBlobStorage) SaveFile(
 
 func (s *AzureBlobStorage) GetFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) (io.ReadCloser, error) {
 	client, err := s.getClient(encryptor)
 	if err != nil {
 		return nil, err
 	}
 
-	blobName := s.buildBlobName(fileID.String())
+	blobName := s.buildBlobName(fileName)
 
 	response, err := client.DownloadStream(
 		context.TODO(),
@@ -179,13 +179,13 @@ func (s *AzureBlobStorage) GetFile(
 	return response.Body, nil
 }
 
-func (s *AzureBlobStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileID uuid.UUID) error {
+func (s *AzureBlobStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileName string) error {
 	client, err := s.getClient(encryptor)
 	if err != nil {
 		return err
 	}
 
-	blobName := s.buildBlobName(fileID.String())
+	blobName := s.buildBlobName(fileName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), azureDeleteTimeout)
 	defer cancel()

@@ -58,6 +58,8 @@ func (s *NotifierService) SaveNotifier(
 			return err
 		}
 
+		oldName := existingNotifier.Name
+
 		if err := existingNotifier.Validate(s.fieldEncryptor); err != nil {
 			return err
 		}
@@ -67,11 +69,23 @@ func (s *NotifierService) SaveNotifier(
 			return err
 		}
 
-		s.auditLogService.WriteAuditLog(
-			fmt.Sprintf("Notifier updated: %s", existingNotifier.Name),
-			&user.ID,
-			&workspaceID,
-		)
+		if oldName != existingNotifier.Name {
+			s.auditLogService.WriteAuditLog(
+				fmt.Sprintf(
+					"Notifier updated and renamed from '%s' to '%s'",
+					oldName,
+					existingNotifier.Name,
+				),
+				&user.ID,
+				&workspaceID,
+			)
+		} else {
+			s.auditLogService.WriteAuditLog(
+				fmt.Sprintf("Notifier updated: %s", existingNotifier.Name),
+				&user.ID,
+				&workspaceID,
+			)
+		}
 	} else {
 		notifier.WorkspaceID = workspaceID
 
@@ -343,9 +357,19 @@ func (s *NotifierService) TransferNotifierToWorkspace(
 		return err
 	}
 
+	sourceWorkspace, err := s.workspaceService.GetWorkspaceByID(sourceWorkspaceID)
+	if err != nil {
+		return fmt.Errorf("failed to get source workspace: %w", err)
+	}
+
+	targetWorkspace, err := s.workspaceService.GetWorkspaceByID(targetWorkspaceID)
+	if err != nil {
+		return fmt.Errorf("failed to get target workspace: %w", err)
+	}
+
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf("Notifier transferred: %s from workspace %s to workspace %s",
-			existingNotifier.Name, sourceWorkspaceID, targetWorkspaceID),
+		fmt.Sprintf("Notifier transferred: %s from workspace '%s' to workspace '%s'",
+			existingNotifier.Name, sourceWorkspace.Name, targetWorkspace.Name),
 		&user.ID,
 		&targetWorkspaceID,
 	)

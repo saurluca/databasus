@@ -10,6 +10,9 @@ interface Props {
 }
 
 export function EditNASStorageComponent({ storage, setStorage, setUnsaved }: Props) {
+  const shareHasSlash =
+    storage?.nasStorage?.share?.includes('/') || storage?.nasStorage?.share?.includes('\\');
+
   return (
     <>
       <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
@@ -60,24 +63,33 @@ export function EditNASStorageComponent({ storage, setStorage, setUnsaved }: Pro
 
       <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
         <div className="mb-1 min-w-[110px] sm:mb-0">Share</div>
-        <Input
-          value={storage?.nasStorage?.share || ''}
-          onChange={(e) => {
-            if (!storage?.nasStorage) return;
+        <div className="flex flex-col">
+          <Input
+            value={storage?.nasStorage?.share || ''}
+            onChange={(e) => {
+              if (!storage?.nasStorage) return;
 
-            setStorage({
-              ...storage,
-              nasStorage: {
-                ...storage.nasStorage,
-                share: e.target.value.trim(),
-              },
-            });
-            setUnsaved();
-          }}
-          size="small"
-          className="w-full max-w-[250px]"
-          placeholder="shared_folder"
-        />
+              setStorage({
+                ...storage,
+                nasStorage: {
+                  ...storage.nasStorage,
+                  share: e.target.value.trim(),
+                },
+              });
+              setUnsaved();
+            }}
+            size="small"
+            className="w-full max-w-[250px]"
+            placeholder="shared_folder"
+            status={shareHasSlash ? 'warning' : undefined}
+          />
+          {shareHasSlash && (
+            <div className="mt-1 max-w-[250px] text-xs text-yellow-600">
+              Share must be a single share name. Use the Path field for subdirectories (e.g. Share:
+              Databasus, Path: DB1)
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">

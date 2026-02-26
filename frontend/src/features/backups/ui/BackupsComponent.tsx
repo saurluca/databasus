@@ -56,8 +56,8 @@ export const BackupsComponent = ({ database, isCanManageDBs, scrollContainerRef 
 
   const [showingRestoresBackupId, setShowingRestoresBackupId] = useState<string | undefined>();
 
-  const isReloadInProgress = useRef(false);
-  const isLazyLoadInProgress = useRef(false);
+  const lastRequestTimeRef = useRef<number>(0);
+  const isBackupsRequestInFlightRef = useRef(false);
 
   const [downloadingBackupId, setDownloadingBackupId] = useState<string | undefined>();
   const [cancellingBackupId, setCancellingBackupId] = useState<string | undefined>();
@@ -73,85 +73,59 @@ export const BackupsComponent = ({ database, isCanManageDBs, scrollContainerRef 
   };
 
   const loadBackups = async (limit?: number) => {
-    if (isReloadInProgress.current || isLazyLoadInProgress.current) {
-      return;
-    }
+    if (isBackupsRequestInFlightRef.current) return;
+    isBackupsRequestInFlightRef.current = true;
 
-    isReloadInProgress.current = true;
+    const requestTime = Date.now();
+    lastRequestTimeRef.current = requestTime;
+
+    const loadLimit = limit ?? currentLimit;
 
     try {
-      const loadLimit = limit || currentLimit;
       const response = await backupsApi.getBackups(database.id, loadLimit, 0);
+
+      if (lastRequestTimeRef.current !== requestTime) return;
 
       setBackups(response.backups);
       setTotalBackups(response.total);
       setHasMore(response.backups.length < response.total);
     } catch (e) {
-      alert((e as Error).message);
+      if (lastRequestTimeRef.current === requestTime) {
+        alert((e as Error).message);
+      }
+    } finally {
+      isBackupsRequestInFlightRef.current = false;
     }
-
-    isReloadInProgress.current = false;
-  };
-
-  const reloadInProgressBackups = async () => {
-    if (isReloadInProgress.current || isLazyLoadInProgress.current) {
-      return;
-    }
-
-    isReloadInProgress.current = true;
-
-    try {
-      // Fetch only the recent backups that could be in progress
-      // We fetch a small number (20) to capture recent backups that might be in progress
-      const response = await backupsApi.getBackups(database.id, 20, 0);
-
-      // Update only the backups that exist in both lists
-      setBackups((prevBackups) => {
-        const updatedBackups = [...prevBackups];
-
-        response.backups.forEach((newBackup) => {
-          const index = updatedBackups.findIndex((b) => b.id === newBackup.id);
-          if (index !== -1) {
-            updatedBackups[index] = newBackup;
-          } else if (index === -1 && updatedBackups.length < currentLimit) {
-            // New backup that doesn't exist yet (e.g., just created)
-            updatedBackups.unshift(newBackup);
-          }
-        });
-
-        return updatedBackups;
-      });
-
-      setTotalBackups(response.total);
-    } catch (e) {
-      alert((e as Error).message);
-    }
-
-    isReloadInProgress.current = false;
   };
 
   const loadMoreBackups = async () => {
-    if (isLoadingMore || !hasMore || isLazyLoadInProgress.current) {
+    if (isLoadingMore || !hasMore) {
       return;
     }
 
-    isLazyLoadInProgress.current = true;
     setIsLoadingMore(true);
 
+    const newLimit = currentLimit + BACKUPS_PAGE_SIZE;
+    setCurrentLimit(newLimit);
+
+    const requestTime = Date.now();
+    lastRequestTimeRef.current = requestTime;
+
     try {
-      const newLimit = currentLimit + BACKUPS_PAGE_SIZE;
       const response = await backupsApi.getBackups(database.id, newLimit, 0);
 
+      if (lastRequestTimeRef.current !== requestTime) return;
+
       setBackups(response.backups);
-      setCurrentLimit(newLimit);
       setTotalBackups(response.total);
       setHasMore(response.backups.length < response.total);
     } catch (e) {
-      alert((e as Error).message);
+      if (lastRequestTimeRef.current === requestTime) {
+        alert((e as Error).message);
+      }
     }
 
     setIsLoadingMore(false);
-    isLazyLoadInProgress.current = false;
   };
 
   const makeBackup = async () => {
@@ -196,7 +170,7 @@ export const BackupsComponent = ({ database, isCanManageDBs, scrollContainerRef 
 
     try {
       await backupsApi.cancelBackup(backupId);
-      await reloadInProgressBackups();
+      await loadBackups();
     } catch (e) {
       alert((e as Error).message);
     }
@@ -220,22 +194,13 @@ export const BackupsComponent = ({ database, isCanManageDBs, scrollContainerRef 
     return () => {};
   }, [database]);
 
-  // Reload backups that are in progress to update their state
   useEffect(() => {
-    const hasInProgressBackups = backups.some(
-      (backup) => backup.status === BackupStatus.IN_PROGRESS,
-    );
-
-    if (!hasInProgressBackups) {
-      return;
-    }
-
-    const timeoutId = setTimeout(async () => {
-      await reloadInProgressBackups();
+    const intervalId = setInterval(() => {
+      loadBackups();
     }, 1_000);
 
-    return () => clearTimeout(timeoutId);
-  }, [backups]);
+    return () => clearInterval(intervalId);
+  }, [currentLimit]);
 
   useEffect(() => {
     if (downloadingBackupId) {

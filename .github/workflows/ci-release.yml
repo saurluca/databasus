@@ -407,7 +407,7 @@ jobs:
       - name: Run database migrations
         run: |
           cd backend
-          go install github.com/pressly/goose/v3/cmd/goose@latest
+          go install github.com/pressly/goose/v3/cmd/goose@v3.24.3
           goose up
 
       - name: Run Go tests

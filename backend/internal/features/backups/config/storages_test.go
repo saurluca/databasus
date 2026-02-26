@@ -35,9 +35,10 @@ func Test_AttachStorageFromSameWorkspace_SuccessfullyAttached(t *testing.T) {
 
 	timeOfDay := "04:00"
 	request := BackupConfig{
-		DatabaseID:       database.ID,
-		IsBackupsEnabled: true,
-		StorePeriod:      period.PeriodWeek,
+		DatabaseID:          database.ID,
+		IsBackupsEnabled:    true,
+		RetentionPolicyType: RetentionPolicyTypeTimePeriod,
+		RetentionTimePeriod: period.PeriodWeek,
 		BackupInterval: &intervals.Interval{
 			Interval:  intervals.IntervalDaily,
 			TimeOfDay: &timeOfDay,
@@ -87,9 +88,10 @@ func Test_AttachStorageFromDifferentWorkspace_ReturnsForbidden(t *testing.T) {
 
 	timeOfDay := "04:00"
 	request := BackupConfig{
-		DatabaseID:       database.ID,
-		IsBackupsEnabled: true,
-		StorePeriod:      period.PeriodWeek,
+		DatabaseID:          database.ID,
+		IsBackupsEnabled:    true,
+		RetentionPolicyType: RetentionPolicyTypeTimePeriod,
+		RetentionTimePeriod: period.PeriodWeek,
 		BackupInterval: &intervals.Interval{
 			Interval:  intervals.IntervalDaily,
 			TimeOfDay: &timeOfDay,
@@ -131,9 +133,10 @@ func Test_DeleteStorageWithAttachedDatabases_CannotDelete(t *testing.T) {
 
 	timeOfDay := "04:00"
 	request := BackupConfig{
-		DatabaseID:       database.ID,
-		IsBackupsEnabled: true,
-		StorePeriod:      period.PeriodWeek,
+		DatabaseID:          database.ID,
+		IsBackupsEnabled:    true,
+		RetentionPolicyType: RetentionPolicyTypeTimePeriod,
+		RetentionTimePeriod: period.PeriodWeek,
 		BackupInterval: &intervals.Interval{
 			Interval:  intervals.IntervalDaily,
 			TimeOfDay: &timeOfDay,
@@ -191,9 +194,10 @@ func Test_TransferStorageWithAttachedDatabase_CannotTransfer(t *testing.T) {
 
 	timeOfDay := "04:00"
 	request := BackupConfig{
-		DatabaseID:       database.ID,
-		IsBackupsEnabled: true,
-		StorePeriod:      period.PeriodWeek,
+		DatabaseID:          database.ID,
+		IsBackupsEnabled:    true,
+		RetentionPolicyType: RetentionPolicyTypeTimePeriod,
+		RetentionTimePeriod: period.PeriodWeek,
 		BackupInterval: &intervals.Interval{
 			Interval:  intervals.IntervalDaily,
 			TimeOfDay: &timeOfDay,

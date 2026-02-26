@@ -21,6 +21,7 @@ import (
 	users_models "databasus-backend/internal/features/users/models"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	util_encryption "databasus-backend/internal/util/encryption"
+	files_utils "databasus-backend/internal/util/files"
 
 	"github.com/google/uuid"
 )
@@ -92,7 +93,7 @@ func (s *BackupService) MakeBackupWithAuth(
 		return errors.New("insufficient permissions to create backup for this database")
 	}
 
-	s.backupSchedulerService.StartBackup(databaseID, true)
+	s.backupSchedulerService.StartBackup(database, true)
 
 	s.auditLogService.WriteAuditLog(
 		fmt.Sprintf("Backup manually initiated for database: %s", database.Name),
@@ -181,11 +182,7 @@ func (s *BackupService) DeleteBackup(
 	}
 
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf(
-			"Backup deleted for database: %s (ID: %s)",
-			database.Name,
-			backupID.String(),
-		),
+		fmt.Sprintf("Backup deleted for database: %s", database.Name),
 		&user.ID,
 		database.WorkspaceID,
 	)
@@ -232,11 +229,7 @@ func (s *BackupService) CancelBackup(
 	}
 
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf(
-			"Backup cancelled for database: %s (ID: %s)",
-			database.Name,
-			backupID.String(),
-		),
+		fmt.Sprintf("Backup cancelled for database: %s", database.Name),
 		&user.ID,
 		database.WorkspaceID,
 	)
@@ -276,11 +269,7 @@ func (s *BackupService) GetBackupFile(
 	}
 
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf(
-			"Backup file downloaded for database: %s (ID: %s)",
-			database.Name,
-			backupID.String(),
-		),
+		fmt.Sprintf("Backup file downloaded for database: %s", database.Name),
 		&user.ID,
 		database.WorkspaceID,
 	)
@@ -336,7 +325,7 @@ func (s *BackupService) getBackupReader(backupID uuid.UUID) (io.ReadCloser, erro
 		return nil, fmt.Errorf("failed to get storage: %w", err)
 	}
 
-	fileReader, err := storage.GetFile(s.fieldEncryptor, backup.ID)
+	fileReader, err := storage.GetFile(s.fieldEncryptor, backup.FileName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get backup file: %w", err)
 	}
@@ -490,11 +479,7 @@ func (s *BackupService) WriteAuditLogForDownload(
 	database *databases.Database,
 ) {
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf(
-			"Backup file downloaded for database: %s (ID: %s)",
-			database.Name,
-			backup.ID.String(),
-		),
+		fmt.Sprintf("Backup file downloaded for database: %s", database.Name),
 		&userID,
 		database.WorkspaceID,
 	)
@@ -521,7 +506,7 @@ func (s *BackupService) generateBackupFilename(
 	database *databases.Database,
 ) string {
 	timestamp := backup.CreatedAt.Format("2006-01-02_15-04-05")
-	safeName := sanitizeFilename(database.Name)
+	safeName := files_utils.SanitizeFilename(database.Name)
 	extension := s.getBackupExtension(database.Type)
 	return fmt.Sprintf("%s_backup_%s%s", safeName, timestamp, extension)
 }

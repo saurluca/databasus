@@ -8,8 +8,6 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
 	"databasus-backend/internal/features/storages"
-
-	"github.com/google/uuid"
 )
 
 type NotificationSender interface {
@@ -23,7 +21,7 @@ type NotificationSender interface {
 type CreateBackupUsecase interface {
 	Execute(
 		ctx context.Context,
-		backupID uuid.UUID,
+		backup *Backup,
 		backupConfig *backups_config.BackupConfig,
 		database *databases.Database,
 		storage *storages.Storage,

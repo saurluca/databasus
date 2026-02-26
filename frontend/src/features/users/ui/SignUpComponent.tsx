@@ -2,10 +2,13 @@ import { EyeInvisibleOutlined, EyeTwoTone } from '@ant-design/icons';
 import { App, Button, Input } from 'antd';
 import { type JSX, useState } from 'react';
 
+import { useCloudflareTurnstile } from '../../../shared/hooks/useCloudflareTurnstile';
+
 import { GITHUB_CLIENT_ID, GOOGLE_CLIENT_ID } from '../../../constants';
 import { userApi } from '../../../entity/users';
 import { StringUtils } from '../../../shared/lib';
 import { FormValidator } from '../../../shared/lib/FormValidator';
+import { CloudflareTurnstileWidget } from '../../../shared/ui/CloudflareTurnstileWidget';
 import { GithubOAuthComponent } from './oauth/GithubOAuthComponent';
 import { GoogleOAuthComponent } from './oauth/GoogleOAuthComponent';
 
@@ -30,6 +33,8 @@ export function SignUpComponent({ onSwitchToSignIn }: SignUpComponentProps): JSX
   const [confirmPasswordError, setConfirmPasswordError] = useState(false);
 
   const [signUpError, setSignUpError] = useState('');
+
+  const { token, containerRef, resetCloudflareTurnstile } = useCloudflareTurnstile();
 
   const validateFieldsForSignUp = (): boolean => {
     if (!name || name.trim() === '') {
@@ -85,10 +90,11 @@ export function SignUpComponent({ onSwitchToSignIn }: SignUpComponentProps): JSX
           email,
           password,
           name,
+          cloudflareTurnstileToken: token,
         });
-        await userApi.signIn({ email, password });
       } catch (e) {
         setSignUpError(StringUtils.capitalizeFirstLetter((e as Error).message));
+        resetCloudflareTurnstile();
       }
     }
 
@@ -172,6 +178,8 @@ export function SignUpComponent({ onSwitchToSignIn }: SignUpComponentProps): JSX
       />
 
       <div className="mt-3" />
+
+      <CloudflareTurnstileWidget containerRef={containerRef} />
 
       <Button
         disabled={isLoading}

@@ -24,6 +24,7 @@ type EmailSMTPSender struct {
 	smtpPort     int
 	smtpUser     string
 	smtpPassword string
+	smtpFrom     string
 	isConfigured bool
 }
 
@@ -33,7 +34,10 @@ func (s *EmailSMTPSender) SendEmail(to, subject, body string) error {
 		return nil
 	}
 
-	from := s.smtpUser
+	from := s.smtpFrom
+	if from == "" {
+		from = s.smtpUser
+	}
 	if from == "" {
 		from = "noreply@" + s.smtpHost
 	}

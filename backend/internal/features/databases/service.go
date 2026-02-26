@@ -192,6 +192,8 @@ func (s *DatabaseService) UpdateDatabase(
 		}
 	}
 
+	oldName := existingDatabase.Name
+
 	if err := existingDatabase.EncryptSensitiveFields(s.fieldEncryptor); err != nil {
 		return fmt.Errorf("failed to encrypt sensitive fields: %w", err)
 	}
@@ -201,11 +203,23 @@ func (s *DatabaseService) UpdateDatabase(
 		return err
 	}
 
-	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf("Database updated: %s", existingDatabase.Name),
-		&user.ID,
-		existingDatabase.WorkspaceID,
-	)
+	if oldName != existingDatabase.Name {
+		s.auditLogService.WriteAuditLog(
+			fmt.Sprintf(
+				"Database updated and renamed from '%s' to '%s'",
+				oldName,
+				existingDatabase.Name,
+			),
+			&user.ID,
+			existingDatabase.WorkspaceID,
+		)
+	} else {
+		s.auditLogService.WriteAuditLog(
+			fmt.Sprintf("Database updated: %s", existingDatabase.Name),
+			&user.ID,
+			existingDatabase.WorkspaceID,
+		)
+	}
 
 	return nil
 }
@@ -571,9 +585,19 @@ func (s *DatabaseService) TransferDatabaseToWorkspace(
 		return err
 	}
 
+	sourceWorkspace, err := s.workspaceService.GetWorkspaceByID(*sourceWorkspaceID)
+	if err != nil {
+		return fmt.Errorf("failed to get source workspace: %w", err)
+	}
+
+	targetWorkspace, err := s.workspaceService.GetWorkspaceByID(targetWorkspaceID)
+	if err != nil {
+		return fmt.Errorf("failed to get target workspace: %w", err)
+	}
+
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf("Database transferred: %s from workspace %s to workspace %s",
-			database.Name, sourceWorkspaceID, targetWorkspaceID),
+		fmt.Sprintf("Database transferred: %s from workspace '%s' to workspace '%s'",
+			database.Name, sourceWorkspace.Name, targetWorkspace.Name),
 		nil,
 		&targetWorkspaceID,
 	)

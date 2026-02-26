@@ -104,6 +104,10 @@ type EnvVariables struct {
 	GoogleClientID     string `env:"GOOGLE_CLIENT_ID"`
 	GoogleClientSecret string `env:"GOOGLE_CLIENT_SECRET"`
 
+	// Cloudflare Turnstile
+	CloudflareTurnstileSecretKey string `env:"CLOUDFLARE_TURNSTILE_SECRET_KEY"`
+	CloudflareTurnstileSiteKey   string `env:"CLOUDFLARE_TURNSTILE_SITE_KEY"`
+
 	// testing Telegram
 	TestTelegramBotToken string `env:"TEST_TELEGRAM_BOT_TOKEN"`
 	TestTelegramChatID   string `env:"TEST_TELEGRAM_CHAT_ID"`
@@ -120,6 +124,7 @@ type EnvVariables struct {
 	SMTPPort     int    `env:"SMTP_PORT"`
 	SMTPUser     string `env:"SMTP_USER"`
 	SMTPPassword string `env:"SMTP_PASSWORD"`
+	SMTPFrom     string `env:"SMTP_FROM"`
 
 	// Application URL (optional) - used for email links
 	DatabasusURL string `env:"DATABASUS_URL"`

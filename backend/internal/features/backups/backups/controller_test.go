@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +20,8 @@ import (
 
 	"databasus-backend/internal/config"
 	audit_logs "databasus-backend/internal/features/audit_logs"
+	"databasus-backend/internal/features/backups/backups/backuping"
+	backups_common "databasus-backend/internal/features/backups/backups/common"
 	backups_core "databasus-backend/internal/features/backups/backups/core"
 	backups_download "databasus-backend/internal/features/backups/backups/download"
 	backups_config "databasus-backend/internal/features/backups/config"
@@ -32,6 +36,7 @@ import (
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	"databasus-backend/internal/util/encryption"
+	files_utils "databasus-backend/internal/util/files"
 	test_utils "databasus-backend/internal/util/testing"
 	"databasus-backend/internal/util/tools"
 )
@@ -956,7 +961,7 @@ func Test_SanitizeFilename(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := sanitizeFilename(tt.input)
+			result := files_utils.SanitizeFilename(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -1244,6 +1249,86 @@ func Test_GenerateDownloadToken_BlockedWhenDownloadInProgress(t *testing.T) {
 	workspaces_testing.RemoveTestWorkspace(workspace, router)
 }
 
+func Test_MakeBackup_VerifyBackupAndMetadataFilesExistInStorage(t *testing.T) {
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
+
+	database, _, storage := createTestDatabaseWithBackups(workspace, owner, router)
+
+	backuperNode := backuping.CreateTestBackuperNode()
+	backuperCancel := backuping.StartBackuperNodeForTest(t, backuperNode)
+	defer backuping.StopBackuperNodeForTest(t, backuperCancel, backuperNode)
+
+	scheduler := backuping.CreateTestScheduler()
+	schedulerCancel := backuping.StartSchedulerForTest(t, scheduler)
+	defer schedulerCancel()
+
+	backupRepo := &backups_core.BackupRepository{}
+	initialBackups, err := backupRepo.FindByDatabaseID(database.ID)
+	assert.NoError(t, err)
+
+	request := MakeBackupRequest{DatabaseID: database.ID}
+	test_utils.MakePostRequest(
+		t,
+		router,
+		"/api/v1/backups",
+		"Bearer "+owner.Token,
+		request,
+		http.StatusOK,
+	)
+
+	backuping.WaitForBackupCompletion(t, database.ID, len(initialBackups), 30*time.Second)
+
+	backups, err := backupRepo.FindByDatabaseID(database.ID)
+	assert.NoError(t, err)
+	assert.Greater(t, len(backups), len(initialBackups))
+
+	backup := backups[0]
+	assert.Equal(t, backups_core.BackupStatusCompleted, backup.Status)
+
+	storageService := storages.GetStorageService()
+	backupStorage, err := storageService.GetStorageByID(backup.StorageID)
+	assert.NoError(t, err)
+
+	encryptor := encryption.GetFieldEncryptor()
+
+	backupFile, err := backupStorage.GetFile(encryptor, backup.FileName)
+	assert.NoError(t, err)
+	backupFile.Close()
+
+	metadataFile, err := backupStorage.GetFile(encryptor, backup.FileName+".metadata")
+	assert.NoError(t, err)
+
+	metadataContent, err := io.ReadAll(metadataFile)
+	assert.NoError(t, err)
+	metadataFile.Close()
+
+	var storageMetadata backups_common.BackupMetadata
+	err = json.Unmarshal(metadataContent, &storageMetadata)
+	assert.NoError(t, err)
+
+	assert.Equal(t, backup.ID, storageMetadata.BackupID)
+
+	if backup.EncryptionSalt != nil && storageMetadata.EncryptionSalt != nil {
+		assert.Equal(t, *backup.EncryptionSalt, *storageMetadata.EncryptionSalt)
+	}
+
+	if backup.EncryptionIV != nil && storageMetadata.EncryptionIV != nil {
+		assert.Equal(t, *backup.EncryptionIV, *storageMetadata.EncryptionIV)
+	}
+
+	assert.Equal(t, backup.Encryption, storageMetadata.Encryption)
+
+	err = backupRepo.DeleteByID(backup.ID)
+	assert.NoError(t, err)
+
+	databases.RemoveTestDatabase(database)
+	time.Sleep(50 * time.Millisecond)
+	storages.RemoveTestStorage(storage.ID)
+	workspaces_testing.RemoveTestWorkspace(workspace, router)
+}
+
 func createTestRouter() *gin.Engine {
 	return CreateTestRouter()
 }
@@ -1407,7 +1492,7 @@ func createTestBackup(
 		context.Background(),
 		encryption.GetFieldEncryptor(),
 		logger,
-		backup.ID,
+		backup.ID.String(),
 		reader,
 	); err != nil {
 		panic(fmt.Sprintf("Failed to create test backup file: %v", err))
@@ -1719,4 +1804,85 @@ func Test_BandwidthThrottling_DynamicAdjustment(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	storages.RemoveTestStorage(storage.ID)
 	workspaces_testing.RemoveTestWorkspace(workspace, router)
+}
+
+func Test_DeleteBackup_RemovesBackupAndMetadataFilesFromDisk(t *testing.T) {
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
+
+	database := createTestDatabase("Test Database", workspace.ID, owner.Token, router)
+	storage := createTestStorage(workspace.ID)
+
+	configService := backups_config.GetBackupConfigService()
+	backupConfig, err := configService.GetBackupConfigByDbId(database.ID)
+	assert.NoError(t, err)
+
+	backupConfig.IsBackupsEnabled = true
+	backupConfig.StorageID = &storage.ID
+	backupConfig.Storage = storage
+	_, err = configService.SaveBackupConfig(backupConfig)
+	assert.NoError(t, err)
+
+	defer func() {
+		databases.RemoveTestDatabase(database)
+		time.Sleep(50 * time.Millisecond)
+		storages.RemoveTestStorage(storage.ID)
+		workspaces_testing.RemoveTestWorkspace(workspace, router)
+	}()
+
+	backuperNode := backuping.CreateTestBackuperNode()
+	backuperCancel := backuping.StartBackuperNodeForTest(t, backuperNode)
+	defer backuping.StopBackuperNodeForTest(t, backuperCancel, backuperNode)
+
+	scheduler := backuping.CreateTestScheduler()
+	schedulerCancel := backuping.StartSchedulerForTest(t, scheduler)
+	defer schedulerCancel()
+
+	backupRepo := &backups_core.BackupRepository{}
+	initialBackups, err := backupRepo.FindByDatabaseID(database.ID)
+	assert.NoError(t, err)
+
+	request := MakeBackupRequest{DatabaseID: database.ID}
+	test_utils.MakePostRequest(
+		t,
+		router,
+		"/api/v1/backups",
+		"Bearer "+owner.Token,
+		request,
+		http.StatusOK,
+	)
+
+	backuping.WaitForBackupCompletion(t, database.ID, len(initialBackups), 30*time.Second)
+
+	backups, err := backupRepo.FindByDatabaseID(database.ID)
+	assert.NoError(t, err)
+	assert.Greater(t, len(backups), len(initialBackups))
+
+	backup := backups[0]
+	assert.Equal(t, backups_core.BackupStatusCompleted, backup.Status)
+
+	dataFolder := config.GetEnv().DataFolder
+	backupFilePath := filepath.Join(dataFolder, backup.FileName)
+	metadataFilePath := filepath.Join(dataFolder, backup.FileName+".metadata")
+
+	_, err = os.Stat(backupFilePath)
+	assert.NoError(t, err, "backup file should exist on disk before deletion")
+
+	_, err = os.Stat(metadataFilePath)
+	assert.NoError(t, err, "metadata file should exist on disk before deletion")
+
+	test_utils.MakeDeleteRequest(
+		t,
+		router,
+		fmt.Sprintf("/api/v1/backups/%s", backup.ID.String()),
+		"Bearer "+owner.Token,
+		http.StatusNoContent,
+	)
+
+	_, err = os.Stat(backupFilePath)
+	assert.True(t, os.IsNotExist(err), "backup file should be removed from disk after deletion")
+
+	_, err = os.Stat(metadataFilePath)
+	assert.True(t, os.IsNotExist(err), "metadata file should be removed from disk after deletion")
 }

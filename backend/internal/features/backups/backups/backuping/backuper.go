@@ -1,7 +1,9 @@
 package backuping
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -196,7 +198,7 @@ func (n *BackuperNode) MakeBackup(backupID uuid.UUID, isCallNotifier bool) {
 
 	backupMetadata, err := n.createBackupUseCase.Execute(
 		ctx,
-		backup.ID,
+		backup,
 		backupConfig,
 		database,
 		storage,
@@ -263,7 +265,7 @@ func (n *BackuperNode) MakeBackup(backupID uuid.UUID, isCallNotifier bool) {
 			// Delete partial backup from storage
 			storage, storageErr := n.storageService.GetStorageByID(backup.StorageID)
 			if storageErr == nil {
-				if deleteErr := storage.DeleteFile(n.fieldEncryptor, backup.ID); deleteErr != nil {
+				if deleteErr := storage.DeleteFile(n.fieldEncryptor, backup.FileName); deleteErr != nil {
 					n.logger.Error(
 						"Failed to delete partial backup file",
 						"backupId",
@@ -311,6 +313,13 @@ func (n *BackuperNode) MakeBackup(backupID uuid.UUID, isCallNotifier bool) {
 
 	// Update backup with encryption metadata if provided
 	if backupMetadata != nil {
+		backupMetadata.BackupID = backup.ID
+
+		if err := backupMetadata.Validate(); err != nil {
+			n.logger.Error("Failed to validate backup metadata", "error", err)
+			return
+		}
+
 		backup.EncryptionSalt = backupMetadata.EncryptionSalt
 		backup.EncryptionIV = backupMetadata.EncryptionIV
 		backup.Encryption = backupMetadata.Encryption
@@ -319,6 +328,39 @@ func (n *BackuperNode) MakeBackup(backupID uuid.UUID, isCallNotifier bool) {
 	if err := n.backupRepository.Save(backup); err != nil {
 		n.logger.Error("Failed to save backup", "error", err)
 		return
+	}
+
+	// Save metadata file to storage
+	if backupMetadata != nil {
+		metadataJSON, err := json.Marshal(backupMetadata)
+		if err != nil {
+			n.logger.Error("Failed to marshal backup metadata to JSON",
+				"backupId", backup.ID,
+				"error", err,
+			)
+		} else {
+			metadataReader := bytes.NewReader(metadataJSON)
+			metadataFileName := backup.FileName + ".metadata"
+
+			if err := storage.SaveFile(
+				context.Background(),
+				n.fieldEncryptor,
+				n.logger,
+				metadataFileName,
+				metadataReader,
+			); err != nil {
+				n.logger.Error("Failed to save backup metadata file to storage",
+					"backupId", backup.ID,
+					"fileName", metadataFileName,
+					"error", err,
+				)
+			} else {
+				n.logger.Info("Backup metadata file saved successfully",
+					"backupId", backup.ID,
+					"fileName", metadataFileName,
+				)
+			}
+		}
 	}
 
 	// Update database last backup time

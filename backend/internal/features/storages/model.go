@@ -41,10 +41,10 @@ func (s *Storage) SaveFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	fileID uuid.UUID,
+	fileName string,
 	file io.Reader,
 ) error {
-	err := s.getSpecificStorage().SaveFile(ctx, encryptor, logger, fileID, file)
+	err := s.getSpecificStorage().SaveFile(ctx, encryptor, logger, fileName, file)
 	if err != nil {
 		lastSaveError := err.Error()
 		s.LastSaveError = &lastSaveError
@@ -58,13 +58,13 @@ func (s *Storage) SaveFile(
 
 func (s *Storage) GetFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) (io.ReadCloser, error) {
-	return s.getSpecificStorage().GetFile(encryptor, fileID)
+	return s.getSpecificStorage().GetFile(encryptor, fileName)
 }
 
-func (s *Storage) DeleteFile(encryptor encryption.FieldEncryptor, fileID uuid.UUID) error {
-	return s.getSpecificStorage().DeleteFile(encryptor, fileID)
+func (s *Storage) DeleteFile(encryptor encryption.FieldEncryptor, fileName string) error {
+	return s.getSpecificStorage().DeleteFile(encryptor, fileName)
 }
 
 func (s *Storage) Validate(encryptor encryption.FieldEncryptor) error {

@@ -190,11 +190,7 @@ func (s *RestoreService) RestoreBackupWithAuth(
 	}
 
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf(
-			"Database restored from backup %s for database: %s",
-			backupID.String(),
-			database.Name,
-		),
+		fmt.Sprintf("Database restored for database: %s", database.Name),
 		&user.ID,
 		database.WorkspaceID,
 	)
@@ -412,11 +408,7 @@ func (s *RestoreService) CancelRestore(
 	}
 
 	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf(
-			"Restore cancelled for database: %s (ID: %s)",
-			database.Name,
-			restoreID.String(),
-		),
+		fmt.Sprintf("Restore cancelled for database: %s", database.Name),
 		&user.ID,
 		database.WorkspaceID,
 	)

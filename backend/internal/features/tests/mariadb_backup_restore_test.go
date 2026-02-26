@@ -147,6 +147,26 @@ func Test_BackupAndRestoreMariadb_WithReadOnlyUser_RestoreIsSuccessful(t *testin
 	}
 }
 
+func Test_BackupAndRestoreMariadb_WithExcludeEvents_EventsNotRestored(t *testing.T) {
+	env := config.GetEnv()
+	cases := []struct {
+		name    string
+		version tools.MariadbVersion
+		port    string
+	}{
+		{"MariaDB 10.5", tools.MariadbVersion105, env.TestMariadb105Port},
+		{"MariaDB 10.11", tools.MariadbVersion1011, env.TestMariadb1011Port},
+		{"MariaDB 11.4", tools.MariadbVersion114, env.TestMariadb114Port},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testMariadbBackupRestoreWithExcludeEventsForVersion(t, tc.version, tc.port)
+		})
+	}
+}
+
 func testMariadbBackupRestoreForVersion(
 	t *testing.T,
 	mariadbVersion tools.MariadbVersion,
@@ -701,4 +721,146 @@ func updateMariadbDatabaseCredentialsViaAPI(
 	}
 
 	return &updatedDatabase
+}
+
+func testMariadbBackupRestoreWithExcludeEventsForVersion(
+	t *testing.T,
+	mariadbVersion tools.MariadbVersion,
+	port string,
+) {
+	container, err := connectToMariadbContainer(mariadbVersion, port)
+	if err != nil {
+		t.Skipf("Skipping MariaDB %s test: %v", mariadbVersion, err)
+		return
+	}
+	defer func() {
+		if container.DB != nil {
+			container.DB.Close()
+		}
+	}()
+
+	setupMariadbTestData(t, container.DB)
+
+	_, err = container.DB.Exec(`
+		CREATE EVENT IF NOT EXISTS test_event
+		ON SCHEDULE EVERY 1 DAY
+		DO BEGIN
+			INSERT INTO test_data (name, value) VALUES ('event_test', 999);
+		END
+	`)
+	if err != nil {
+		t.Skipf(
+			"Skipping test: MariaDB version doesn't support events or event scheduler disabled: %v",
+			err,
+		)
+		return
+	}
+
+	router := createTestRouter()
+	user := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace(
+		"MariaDB Exclude Events Test Workspace",
+		user,
+		router,
+	)
+
+	storage := storages.CreateTestStorage(workspace.ID)
+
+	database := createMariadbDatabaseViaAPI(
+		t, router, "MariaDB Exclude Events Test Database", workspace.ID,
+		container.Host, container.Port,
+		container.Username, container.Password, container.Database,
+		container.Version,
+		user.Token,
+	)
+
+	database.Mariadb.IsExcludeEvents = true
+	w := workspaces_testing.MakeAPIRequest(
+		router,
+		"POST",
+		"/api/v1/databases/update",
+		"Bearer "+user.Token,
+		database,
+	)
+	if w.Code != http.StatusOK {
+		t.Fatalf(
+			"Failed to update database with IsExcludeEvents. Status: %d, Body: %s",
+			w.Code,
+			w.Body.String(),
+		)
+	}
+
+	enableBackupsViaAPI(
+		t, router, database.ID, storage.ID,
+		backups_config.BackupEncryptionNone, user.Token,
+	)
+
+	createBackupViaAPI(t, router, database.ID, user.Token)
+
+	backup := waitForBackupCompletion(t, router, database.ID, user.Token, 5*time.Minute)
+	assert.Equal(t, backups_core.BackupStatusCompleted, backup.Status)
+
+	newDBName := "restoreddb_mariadb_no_events"
+	_, err = container.DB.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s;", newDBName))
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(fmt.Sprintf("CREATE DATABASE %s;", newDBName))
+	assert.NoError(t, err)
+
+	newDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true",
+		container.Username, container.Password, container.Host, container.Port, newDBName)
+	newDB, err := sqlx.Connect("mysql", newDSN)
+	assert.NoError(t, err)
+	defer newDB.Close()
+
+	createMariadbRestoreViaAPI(
+		t, router, backup.ID,
+		container.Host, container.Port,
+		container.Username, container.Password, newDBName,
+		container.Version,
+		user.Token,
+	)
+
+	restore := waitForMariadbRestoreCompletion(t, router, backup.ID, user.Token, 5*time.Minute)
+	assert.Equal(t, restores_core.RestoreStatusCompleted, restore.Status)
+
+	var tableExists int
+	err = newDB.Get(
+		&tableExists,
+		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'test_data'",
+		newDBName,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, tableExists, "Table 'test_data' should exist in restored database")
+
+	verifyMariadbDataIntegrity(t, container.DB, newDB)
+
+	var eventCount int
+	err = newDB.Get(
+		&eventCount,
+		"SELECT COUNT(*) FROM information_schema.events WHERE event_schema = ? AND event_name = 'test_event'",
+		newDBName,
+	)
+	assert.NoError(t, err)
+	assert.Equal(
+		t,
+		0,
+		eventCount,
+		"Event 'test_event' should NOT exist in restored database when IsExcludeEvents is true",
+	)
+
+	err = os.Remove(filepath.Join(config.GetEnv().DataFolder, backup.ID.String()))
+	if err != nil {
+		t.Logf("Warning: Failed to delete backup file: %v", err)
+	}
+
+	test_utils.MakeDeleteRequest(
+		t,
+		router,
+		"/api/v1/databases/"+database.ID.String(),
+		"Bearer "+user.Token,
+		http.StatusNoContent,
+	)
+	storages.RemoveTestStorage(storage.ID)
+	workspaces_testing.RemoveTestWorkspace(workspace, router)
 }

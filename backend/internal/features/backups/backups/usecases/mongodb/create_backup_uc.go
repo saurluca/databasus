@@ -16,6 +16,7 @@ import (
 
 	"databasus-backend/internal/config"
 	common "databasus-backend/internal/features/backups/backups/common"
+	backups_core "databasus-backend/internal/features/backups/backups/core"
 	backup_encryption "databasus-backend/internal/features/backups/backups/encryption"
 	backups_config "databasus-backend/internal/features/backups/config"
 	"databasus-backend/internal/features/databases"
@@ -46,7 +47,7 @@ type writeResult struct {
 
 func (uc *CreateMongodbBackupUsecase) Execute(
 	ctx context.Context,
-	backupID uuid.UUID,
+	backup *backups_core.Backup,
 	backupConfig *backups_config.BackupConfig,
 	db *databases.Database,
 	storage *storages.Storage,
@@ -76,7 +77,7 @@ func (uc *CreateMongodbBackupUsecase) Execute(
 
 	return uc.streamToStorage(
 		ctx,
-		backupID,
+		backup,
 		backupConfig,
 		tools.GetMongodbExecutable(
 			tools.MongodbExecutableMongodump,
@@ -114,7 +115,7 @@ func (uc *CreateMongodbBackupUsecase) buildMongodumpArgs(
 
 func (uc *CreateMongodbBackupUsecase) streamToStorage(
 	parentCtx context.Context,
-	backupID uuid.UUID,
+	backup *backups_core.Backup,
 	backupConfig *backups_config.BackupConfig,
 	mongodumpBin string,
 	args []string,
@@ -163,7 +164,7 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 	storageReader, storageWriter := io.Pipe()
 
 	finalWriter, encryptionWriter, backupMetadata, err := uc.setupBackupEncryption(
-		backupID,
+		backup.ID,
 		backupConfig,
 		storageWriter,
 	)
@@ -175,7 +176,13 @@ func (uc *CreateMongodbBackupUsecase) streamToStorage(
 
 	saveErrCh := make(chan error, 1)
 	go func() {
-		saveErr := storage.SaveFile(ctx, uc.fieldEncryptor, uc.logger, backupID, storageReader)
+		saveErr := storage.SaveFile(
+			ctx,
+			uc.fieldEncryptor,
+			uc.logger,
+			backup.FileName,
+			storageReader,
+		)
 		saveErrCh <- saveErr
 	}()
 
@@ -262,6 +269,7 @@ func (uc *CreateMongodbBackupUsecase) setupBackupEncryption(
 	storageWriter io.WriteCloser,
 ) (io.Writer, *backup_encryption.EncryptionWriter, common.BackupMetadata, error) {
 	backupMetadata := common.BackupMetadata{
+		BackupID:   backupID,
 		Encryption: backups_config.BackupEncryptionNone,
 	}
 
@@ -298,6 +306,7 @@ func (uc *CreateMongodbBackupUsecase) setupBackupEncryption(
 	saltBase64 := base64.StdEncoding.EncodeToString(salt)
 	nonceBase64 := base64.StdEncoding.EncodeToString(nonce)
 
+	backupMetadata.BackupID = backupID
 	backupMetadata.Encryption = backups_config.BackupEncryptionEncrypted
 	backupMetadata.EncryptionSalt = &saltBase64
 	backupMetadata.EncryptionIV = &nonceBase64

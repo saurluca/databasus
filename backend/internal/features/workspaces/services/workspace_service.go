@@ -129,6 +129,8 @@ func (s *WorkspaceService) UpdateWorkspace(
 		return nil, fmt.Errorf("failed to get workspace: %w", err)
 	}
 
+	oldName := existingWorkspace.Name
+
 	updateDTO.ID = workspaceID
 	updateDTO.CreatedAt = existingWorkspace.CreatedAt
 
@@ -138,11 +140,19 @@ func (s *WorkspaceService) UpdateWorkspace(
 		return nil, fmt.Errorf("failed to update workspace: %w", err)
 	}
 
-	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf("Workspace updated: %s", updateDTO.Name),
-		&user.ID,
-		&workspaceID,
-	)
+	if oldName != updateDTO.Name {
+		s.auditLogService.WriteAuditLog(
+			fmt.Sprintf("Workspace updated and renamed from '%s' to '%s'", oldName, updateDTO.Name),
+			&user.ID,
+			&workspaceID,
+		)
+	} else {
+		s.auditLogService.WriteAuditLog(
+			fmt.Sprintf("Workspace updated: %s", updateDTO.Name),
+			&user.ID,
+			&workspaceID,
+		)
+	}
 
 	return existingWorkspace, nil
 }

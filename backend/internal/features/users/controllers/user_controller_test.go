@@ -27,7 +27,20 @@ func Test_SignUpUser_WithValidData_UserCreated(t *testing.T) {
 		Name:     "Test User",
 	}
 
-	test_utils.MakePostRequest(t, router, "/api/v1/users/signup", "", request, http.StatusOK)
+	var response users_dto.SignInResponseDTO
+	test_utils.MakePostRequestAndUnmarshal(
+		t,
+		router,
+		"/api/v1/users/signup",
+		"",
+		request,
+		http.StatusOK,
+		&response,
+	)
+
+	assert.NotEmpty(t, response.Token)
+	assert.NotEqual(t, uuid.Nil, response.UserID)
+	assert.Equal(t, request.Email, response.Email)
 }
 
 func Test_SignUpUser_WithInvalidJSON_ReturnsBadRequest(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_Validate_WhenStoragePeriodIsWeekAndPlanAllowsMonth_ValidationPasses(t *testing.T) {
+func Test_Validate_WhenRetentionTimePeriodIsWeekAndPlanAllowsMonth_ValidationPasses(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodWeek
+	config.RetentionTimePeriod = period.PeriodWeek
 
 	plan := createUnlimitedPlan()
 	plan.MaxStoragePeriod = period.PeriodMonth
@@ -22,9 +22,9 @@ func Test_Validate_WhenStoragePeriodIsWeekAndPlanAllowsMonth_ValidationPasses(t 
 	assert.NoError(t, err)
 }
 
-func Test_Validate_WhenStoragePeriodIsYearAndPlanAllowsMonth_ValidationFails(t *testing.T) {
+func Test_Validate_WhenRetentionTimePeriodIsYearAndPlanAllowsMonth_ValidationFails(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodYear
+	config.RetentionTimePeriod = period.PeriodYear
 
 	plan := createUnlimitedPlan()
 	plan.MaxStoragePeriod = period.PeriodMonth
@@ -33,9 +33,11 @@ func Test_Validate_WhenStoragePeriodIsYearAndPlanAllowsMonth_ValidationFails(t *
 	assert.EqualError(t, err, "storage period exceeds plan limit")
 }
 
-func Test_Validate_WhenStoragePeriodIsForeverAndPlanAllowsForever_ValidationPasses(t *testing.T) {
+func Test_Validate_WhenRetentionTimePeriodIsForeverAndPlanAllowsForever_ValidationPasses(
+	t *testing.T,
+) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodForever
+	config.RetentionTimePeriod = period.PeriodForever
 
 	plan := createUnlimitedPlan()
 	plan.MaxStoragePeriod = period.PeriodForever
@@ -44,9 +46,9 @@ func Test_Validate_WhenStoragePeriodIsForeverAndPlanAllowsForever_ValidationPass
 	assert.NoError(t, err)
 }
 
-func Test_Validate_WhenStoragePeriodIsForeverAndPlanAllowsYear_ValidationFails(t *testing.T) {
+func Test_Validate_WhenRetentionTimePeriodIsForeverAndPlanAllowsYear_ValidationFails(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodForever
+	config.RetentionTimePeriod = period.PeriodForever
 
 	plan := createUnlimitedPlan()
 	plan.MaxStoragePeriod = period.PeriodYear
@@ -55,9 +57,9 @@ func Test_Validate_WhenStoragePeriodIsForeverAndPlanAllowsYear_ValidationFails(t
 	assert.EqualError(t, err, "storage period exceeds plan limit")
 }
 
-func Test_Validate_WhenStoragePeriodEqualsExactPlanLimit_ValidationPasses(t *testing.T) {
+func Test_Validate_WhenRetentionTimePeriodEqualsExactPlanLimit_ValidationPasses(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodMonth
+	config.RetentionTimePeriod = period.PeriodMonth
 
 	plan := createUnlimitedPlan()
 	plan.MaxStoragePeriod = period.PeriodMonth
@@ -178,7 +180,7 @@ func Test_Validate_WhenTotalSizeEqualsExactPlanLimit_ValidationPasses(t *testing
 
 func Test_Validate_WhenAllLimitsAreUnlimitedInPlan_AnyConfigurationPasses(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodForever
+	config.RetentionTimePeriod = period.PeriodForever
 	config.MaxBackupSizeMB = 0
 	config.MaxBackupsTotalSizeMB = 0
 
@@ -190,7 +192,7 @@ func Test_Validate_WhenAllLimitsAreUnlimitedInPlan_AnyConfigurationPasses(t *tes
 
 func Test_Validate_WhenMultipleLimitsExceeded_ValidationFailsWithFirstError(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = period.PeriodYear
+	config.RetentionTimePeriod = period.PeriodYear
 	config.MaxBackupSizeMB = 500
 	config.MaxBackupsTotalSizeMB = 5000
 
@@ -249,14 +251,14 @@ func Test_Validate_WhenEncryptionIsInvalid_ValidationFailsRegardlessOfPlan(t *te
 	assert.EqualError(t, err, "encryption must be NONE or ENCRYPTED")
 }
 
-func Test_Validate_WhenStoragePeriodIsEmpty_ValidationFails(t *testing.T) {
+func Test_Validate_WhenRetentionTimePeriodIsEmpty_ValidationFails(t *testing.T) {
 	config := createValidBackupConfig()
-	config.StorePeriod = ""
+	config.RetentionTimePeriod = ""
 
 	plan := createUnlimitedPlan()
 
 	err := config.Validate(plan)
-	assert.EqualError(t, err, "store period is required")
+	assert.EqualError(t, err, "retention time period is required")
 }
 
 func Test_Validate_WhenMaxBackupSizeIsNegative_ValidationFails(t *testing.T) {
@@ -282,8 +284,8 @@ func Test_Validate_WhenMaxTotalSizeIsNegative_ValidationFails(t *testing.T) {
 func Test_Validate_WhenPlanLimitsAreAtBoundary_ValidationWorks(t *testing.T) {
 	tests := []struct {
 		name          string
-		configPeriod  period.Period
-		planPeriod    period.Period
+		configPeriod  period.TimePeriod
+		planPeriod    period.TimePeriod
 		configSize    int64
 		planSize      int64
 		configTotal   int64
@@ -345,7 +347,7 @@ func Test_Validate_WhenPlanLimitsAreAtBoundary_ValidationWorks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := createValidBackupConfig()
-			config.StorePeriod = tt.configPeriod
+			config.RetentionTimePeriod = tt.configPeriod
 			config.MaxBackupSizeMB = tt.configSize
 			config.MaxBackupsTotalSizeMB = tt.configTotal
 
@@ -364,12 +366,96 @@ func Test_Validate_WhenPlanLimitsAreAtBoundary_ValidationWorks(t *testing.T) {
 	}
 }
 
+func Test_Validate_WhenPolicyTypeIsCount_RequiresPositiveCount(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = RetentionPolicyTypeCount
+	config.RetentionCount = 0
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.EqualError(t, err, "retention count must be greater than 0")
+}
+
+func Test_Validate_WhenPolicyTypeIsCount_WithPositiveCount_ValidationPasses(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = RetentionPolicyTypeCount
+	config.RetentionCount = 10
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.NoError(t, err)
+}
+
+func Test_Validate_WhenPolicyTypeIsGFS_RequiresAtLeastOneField(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = RetentionPolicyTypeGFS
+	config.RetentionGfsDays = 0
+	config.RetentionGfsWeeks = 0
+	config.RetentionGfsMonths = 0
+	config.RetentionGfsYears = 0
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.EqualError(t, err, "at least one GFS retention field must be greater than 0")
+}
+
+func Test_Validate_WhenPolicyTypeIsGFS_WithOnlyHours_ValidationPasses(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = RetentionPolicyTypeGFS
+	config.RetentionGfsHours = 24
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.NoError(t, err)
+}
+
+func Test_Validate_WhenPolicyTypeIsGFS_WithOnlyDays_ValidationPasses(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = RetentionPolicyTypeGFS
+	config.RetentionGfsDays = 7
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.NoError(t, err)
+}
+
+func Test_Validate_WhenPolicyTypeIsGFS_WithAllFields_ValidationPasses(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = RetentionPolicyTypeGFS
+	config.RetentionGfsHours = 24
+	config.RetentionGfsDays = 7
+	config.RetentionGfsWeeks = 4
+	config.RetentionGfsMonths = 12
+	config.RetentionGfsYears = 3
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.NoError(t, err)
+}
+
+func Test_Validate_WhenPolicyTypeIsInvalid_ValidationFails(t *testing.T) {
+	config := createValidBackupConfig()
+	config.RetentionPolicyType = "INVALID"
+
+	plan := createUnlimitedPlan()
+
+	err := config.Validate(plan)
+	assert.EqualError(t, err, "invalid retention policy type")
+}
+
 func createValidBackupConfig() *BackupConfig {
 	intervalID := uuid.New()
 	return &BackupConfig{
 		DatabaseID:            uuid.New(),
 		IsBackupsEnabled:      true,
-		StorePeriod:           period.PeriodMonth,
+		RetentionPolicyType:   RetentionPolicyTypeTimePeriod,
+		RetentionTimePeriod:   period.PeriodMonth,
 		BackupIntervalID:      intervalID,
 		BackupInterval:        &intervals.Interval{ID: intervalID},
 		SendNotificationsOn:   []BackupNotificationType{},

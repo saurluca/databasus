@@ -564,12 +564,23 @@ func (p *PostgresqlDatabase) CreateReadOnlyUser(
 			logger.Warn("Failed to revoke TEMP privilege", "error", err, "username", baseUsername)
 		}
 
-		// Step 4: Discover all user-created schemas
-		rows, err := tx.Query(ctx, `
-			SELECT schema_name
-			FROM information_schema.schemata
-			WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
-		`)
+		// Step 4: Discover schemas to grant privileges on
+		// If IncludeSchemas is specified, only use those schemas; otherwise use all non-system schemas
+		var rows pgx.Rows
+		if len(p.IncludeSchemas) > 0 {
+			rows, err = tx.Query(ctx, `
+				SELECT schema_name
+				FROM information_schema.schemata
+				WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+				AND schema_name = ANY($1::text[])
+			`, p.IncludeSchemas)
+		} else {
+			rows, err = tx.Query(ctx, `
+				SELECT schema_name
+				FROM information_schema.schemata
+				WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+			`)
+		}
 		if err != nil {
 			return "", "", fmt.Errorf("failed to get schemas: %w", err)
 		}
@@ -619,50 +630,197 @@ func (p *PostgresqlDatabase) CreateReadOnlyUser(
 		}
 
 		// Step 6: Grant SELECT on ALL existing tables and sequences
-		grantSelectSQL := fmt.Sprintf(`
-			DO $$
-			DECLARE
-				schema_rec RECORD;
-			BEGIN
-				FOR schema_rec IN
-					SELECT schema_name
-					FROM information_schema.schemata
-					WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
-				LOOP
-					EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %%I TO "%s"', schema_rec.schema_name);
-					EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %%I TO "%s"', schema_rec.schema_name);
-				END LOOP;
-			END $$;
-		`, baseUsername, baseUsername)
+		// Use the already-filtered schemas list from Step 4
+		for _, schema := range schemas {
+			_, err = tx.Exec(
+				ctx,
+				fmt.Sprintf(
+					`GRANT SELECT ON ALL TABLES IN SCHEMA "%s" TO "%s"`,
+					schema,
+					baseUsername,
+				),
+			)
+			if err != nil {
+				return "", "", fmt.Errorf(
+					"failed to grant select on tables in schema %s: %w",
+					schema,
+					err,
+				)
+			}
 
-		_, err = tx.Exec(ctx, grantSelectSQL)
-		if err != nil {
-			return "", "", fmt.Errorf("failed to grant select on tables: %w", err)
+			_, err = tx.Exec(
+				ctx,
+				fmt.Sprintf(
+					`GRANT SELECT ON ALL SEQUENCES IN SCHEMA "%s" TO "%s"`,
+					schema,
+					baseUsername,
+				),
+			)
+			if err != nil {
+				return "", "", fmt.Errorf(
+					"failed to grant select on sequences in schema %s: %w",
+					schema,
+					err,
+				)
+			}
 		}
 
 		// Step 7: Set default privileges for FUTURE tables and sequences
-		defaultPrivilegesSQL := fmt.Sprintf(`
-			DO $$
-			DECLARE
-				schema_rec RECORD;
-			BEGIN
-				FOR schema_rec IN
-					SELECT schema_name
-					FROM information_schema.schemata
-					WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
-				LOOP
-					EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %%I GRANT SELECT ON TABLES TO "%s"', schema_rec.schema_name);
-					EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %%I GRANT SELECT ON SEQUENCES TO "%s"', schema_rec.schema_name);
-				END LOOP;
-			END $$;
-		`, baseUsername, baseUsername)
+		// First, set default privileges for objects created by the current user
+		// Use the already-filtered schemas list from Step 4
+		for _, schema := range schemas {
+			_, err = tx.Exec(
+				ctx,
+				fmt.Sprintf(
+					`ALTER DEFAULT PRIVILEGES IN SCHEMA "%s" GRANT SELECT ON TABLES TO "%s"`,
+					schema,
+					baseUsername,
+				),
+			)
+			if err != nil {
+				return "", "", fmt.Errorf(
+					"failed to set default privileges for tables in schema %s: %w",
+					schema,
+					err,
+				)
+			}
 
-		_, err = tx.Exec(ctx, defaultPrivilegesSQL)
-		if err != nil {
-			return "", "", fmt.Errorf("failed to set default privileges: %w", err)
+			_, err = tx.Exec(
+				ctx,
+				fmt.Sprintf(
+					`ALTER DEFAULT PRIVILEGES IN SCHEMA "%s" GRANT SELECT ON SEQUENCES TO "%s"`,
+					schema,
+					baseUsername,
+				),
+			)
+			if err != nil {
+				return "", "", fmt.Errorf(
+					"failed to set default privileges for sequences in schema %s: %w",
+					schema,
+					err,
+				)
+			}
 		}
 
-		// Step 8: Verify user creation before committing
+		// Step 8: Discover all roles that own objects in each schema
+		// This is needed because ALTER DEFAULT PRIVILEGES only applies to objects created by the current role.
+		// To handle tables created by OTHER users (like the GitHub issue with partitioned tables),
+		// we need to set "ALTER DEFAULT PRIVILEGES FOR ROLE <owner>" for each object owner.
+		// Filter by IncludeSchemas if specified.
+		type SchemaOwner struct {
+			SchemaName string
+			RoleName   string
+		}
+
+		var ownerRows pgx.Rows
+		if len(p.IncludeSchemas) > 0 {
+			ownerRows, err = tx.Query(ctx, `
+				SELECT DISTINCT n.nspname as schema_name, pg_get_userbyid(c.relowner) as role_name
+				FROM pg_class c
+				JOIN pg_namespace n ON c.relnamespace = n.oid
+				WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+				  AND n.nspname = ANY($1::text[])
+				  AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+				  AND pg_get_userbyid(c.relowner) != current_user
+				ORDER BY n.nspname, role_name
+			`, p.IncludeSchemas)
+		} else {
+			ownerRows, err = tx.Query(ctx, `
+				SELECT DISTINCT n.nspname as schema_name, pg_get_userbyid(c.relowner) as role_name
+				FROM pg_class c
+				JOIN pg_namespace n ON c.relnamespace = n.oid
+				WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+				  AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+				  AND pg_get_userbyid(c.relowner) != current_user
+				ORDER BY n.nspname, role_name
+			`)
+		}
+
+		if err != nil {
+			// Log warning but continue - this is a best-effort enhancement
+			logger.Warn("Failed to query object owners for default privileges", "error", err)
+		} else {
+			var schemaOwners []SchemaOwner
+			for ownerRows.Next() {
+				var so SchemaOwner
+				if err := ownerRows.Scan(&so.SchemaName, &so.RoleName); err != nil {
+					ownerRows.Close()
+					logger.Warn("Failed to scan schema owner", "error", err)
+					break
+				}
+				schemaOwners = append(schemaOwners, so)
+			}
+			ownerRows.Close()
+
+			if err := ownerRows.Err(); err != nil {
+				logger.Warn("Error iterating schema owners", "error", err)
+			}
+
+			// Step 9: Set default privileges FOR ROLE for each object owner
+			// Note: This may fail for some roles due to permission issues (e.g., roles owned by other superusers)
+			// We log warnings but continue - user creation should succeed even if some roles can't be configured
+			for _, so := range schemaOwners {
+				// Try to set default privileges for tables
+				_, err = tx.Exec(
+					ctx,
+					fmt.Sprintf(
+						`ALTER DEFAULT PRIVILEGES FOR ROLE "%s" IN SCHEMA "%s" GRANT SELECT ON TABLES TO "%s"`,
+						so.RoleName,
+						so.SchemaName,
+						baseUsername,
+					),
+				)
+				if err != nil {
+					logger.Warn(
+						"Failed to set default privileges for role (tables)",
+						"error",
+						err,
+						"role",
+						so.RoleName,
+						"schema",
+						so.SchemaName,
+						"readonly_user",
+						baseUsername,
+					)
+				}
+
+				// Try to set default privileges for sequences
+				_, err = tx.Exec(
+					ctx,
+					fmt.Sprintf(
+						`ALTER DEFAULT PRIVILEGES FOR ROLE "%s" IN SCHEMA "%s" GRANT SELECT ON SEQUENCES TO "%s"`,
+						so.RoleName,
+						so.SchemaName,
+						baseUsername,
+					),
+				)
+				if err != nil {
+					logger.Warn(
+						"Failed to set default privileges for role (sequences)",
+						"error",
+						err,
+						"role",
+						so.RoleName,
+						"schema",
+						so.SchemaName,
+						"readonly_user",
+						baseUsername,
+					)
+				}
+			}
+
+			if len(schemaOwners) > 0 {
+				logger.Info(
+					"Set default privileges for existing object owners",
+					"readonly_user",
+					baseUsername,
+					"owner_count",
+					len(schemaOwners),
+				)
+			}
+		}
+
+		// Step 10: Verify user creation before committing
 		var verifyUsername string
 		err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT rolname FROM pg_roles WHERE rolname = '%s'`, baseUsername)).
 			Scan(&verifyUsername)

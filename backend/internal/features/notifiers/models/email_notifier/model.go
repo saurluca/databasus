@@ -9,17 +9,17 @@ import (
 	"mime"
 	"net"
 	"net/smtp"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 const (
-	ImplicitTLSPort  = 465
-	DefaultTimeout   = 5 * time.Second
-	DefaultHelloName = "localhost"
-	MIMETypeHTML     = "text/html"
-	MIMECharsetUTF8  = "UTF-8"
+	ImplicitTLSPort = 465
+	DefaultTimeout  = 5 * time.Second
+	MIMETypeHTML    = "text/html"
+	MIMECharsetUTF8 = "UTF-8"
 )
 
 type EmailNotifier struct {
@@ -116,6 +116,16 @@ func (e *EmailNotifier) EncryptSensitiveData(encryptor encryption.FieldEncryptor
 	return nil
 }
 
+func getHelloName() string {
+	hostname, err := os.Hostname()
+
+	if err != nil || hostname == "" {
+		return "localhost"
+	}
+
+	return hostname
+}
+
 // encodeRFC2047 encodes a string using RFC 2047 MIME encoding for email headers
 // This ensures compatibility with SMTP servers that don't support SMTPUTF8
 func encodeRFC2047(s string) string {
@@ -131,6 +141,7 @@ func (e *EmailNotifier) buildEmailContent(heading, message, from string) []byte 
 	encodedSubject := encodeRFC2047(heading)
 	subject := fmt.Sprintf("Subject: %s\r\n", encodedSubject)
 	dateHeader := fmt.Sprintf("Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	messageID := fmt.Sprintf("Message-ID: <%s@%s>\r\n", uuid.New().String(), e.SMTPHost)
 
 	mimeHeaders := fmt.Sprintf(
 		"MIME-version: 1.0;\nContent-Type: %s; charset=\"%s\";\n\n",
@@ -144,7 +155,7 @@ func (e *EmailNotifier) buildEmailContent(heading, message, from string) []byte 
 
 	toHeader := fmt.Sprintf("To: %s\r\n", e.TargetEmail)
 
-	return []byte(fromHeader + toHeader + subject + dateHeader + mimeHeaders + message)
+	return []byte(fromHeader + toHeader + subject + dateHeader + messageID + mimeHeaders + message)
 }
 
 func (e *EmailNotifier) sendImplicitTLS(
@@ -219,7 +230,7 @@ func (e *EmailNotifier) createStartTLSClient() (*smtp.Client, func(), error) {
 		return nil, nil, fmt.Errorf("failed to create SMTP client: %w", err)
 	}
 
-	if err := client.Hello(DefaultHelloName); err != nil {
+	if err := client.Hello(getHelloName()); err != nil {
 		_ = client.Quit()
 		_ = conn.Close()
 		return nil, nil, fmt.Errorf("SMTP hello failed: %w", err)

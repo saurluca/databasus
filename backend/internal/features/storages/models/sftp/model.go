@@ -41,7 +41,7 @@ func (s *SFTPStorage) SaveFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	fileID uuid.UUID,
+	fileName string,
 	file io.Reader,
 ) error {
 	select {
@@ -50,19 +50,19 @@ func (s *SFTPStorage) SaveFile(
 	default:
 	}
 
-	logger.Info("Starting to save file to SFTP storage", "fileId", fileID.String(), "host", s.Host)
+	logger.Info("Starting to save file to SFTP storage", "fileName", fileName, "host", s.Host)
 
 	client, sshConn, err := s.connect(encryptor, sftpConnectTimeout)
 	if err != nil {
-		logger.Error("Failed to connect to SFTP", "fileId", fileID.String(), "error", err)
+		logger.Error("Failed to connect to SFTP", "fileName", fileName, "error", err)
 		return fmt.Errorf("failed to connect to SFTP: %w", err)
 	}
 	defer func() {
 		if closeErr := client.Close(); closeErr != nil {
 			logger.Error(
 				"Failed to close SFTP client",
-				"fileId",
-				fileID.String(),
+				"fileName",
+				fileName,
 				"error",
 				closeErr,
 			)
@@ -70,8 +70,8 @@ func (s *SFTPStorage) SaveFile(
 		if closeErr := sshConn.Close(); closeErr != nil {
 			logger.Error(
 				"Failed to close SSH connection",
-				"fileId",
-				fileID.String(),
+				"fileName",
+				fileName,
 				"error",
 				closeErr,
 			)
@@ -82,8 +82,8 @@ func (s *SFTPStorage) SaveFile(
 		if err := s.ensureDirectory(client, s.Path); err != nil {
 			logger.Error(
 				"Failed to ensure directory",
-				"fileId",
-				fileID.String(),
+				"fileName",
+				fileName,
 				"path",
 				s.Path,
 				"error",
@@ -93,12 +93,12 @@ func (s *SFTPStorage) SaveFile(
 		}
 	}
 
-	filePath := s.getFilePath(fileID.String())
-	logger.Debug("Uploading file to SFTP", "fileId", fileID.String(), "filePath", filePath)
+	filePath := s.getFilePath(fileName)
+	logger.Debug("Uploading file to SFTP", "fileName", fileName, "filePath", filePath)
 
 	remoteFile, err := client.Create(filePath)
 	if err != nil {
-		logger.Error("Failed to create remote file", "fileId", fileID.String(), "error", err)
+		logger.Error("Failed to create remote file", "fileName", fileName, "error", err)
 		return fmt.Errorf("failed to create remote file: %w", err)
 	}
 	defer func() {
@@ -111,18 +111,18 @@ func (s *SFTPStorage) SaveFile(
 	if err != nil {
 		select {
 		case <-ctx.Done():
-			logger.Info("SFTP upload cancelled", "fileId", fileID.String())
+			logger.Info("SFTP upload cancelled", "fileName", fileName)
 			return ctx.Err()
 		default:
-			logger.Error("Failed to upload file to SFTP", "fileId", fileID.String(), "error", err)
+			logger.Error("Failed to upload file to SFTP", "fileName", fileName, "error", err)
 			return fmt.Errorf("failed to upload file to SFTP: %w", err)
 		}
 	}
 
 	logger.Info(
 		"Successfully saved file to SFTP storage",
-		"fileId",
-		fileID.String(),
+		"fileName",
+		fileName,
 		"filePath",
 		filePath,
 	)
@@ -131,14 +131,14 @@ func (s *SFTPStorage) SaveFile(
 
 func (s *SFTPStorage) GetFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) (io.ReadCloser, error) {
 	client, sshConn, err := s.connect(encryptor, sftpConnectTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to SFTP: %w", err)
 	}
 
-	filePath := s.getFilePath(fileID.String())
+	filePath := s.getFilePath(fileName)
 
 	remoteFile, err := client.Open(filePath)
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *SFTPStorage) GetFile(
 	}, nil
 }
 
-func (s *SFTPStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileID uuid.UUID) error {
+func (s *SFTPStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sftpDeleteTimeout)
 	defer cancel()
 
@@ -167,7 +167,7 @@ func (s *SFTPStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileID uui
 		_ = sshConn.Close()
 	}()
 
-	filePath := s.getFilePath(fileID.String())
+	filePath := s.getFilePath(fileName)
 
 	_, err = client.Stat(filePath)
 	if err != nil {

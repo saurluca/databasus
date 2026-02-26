@@ -1319,6 +1319,346 @@ type PostgresContainer struct {
 	DB       *sqlx.DB
 }
 
+func Test_CreateReadOnlyUser_TablesCreatedByDifferentUser_ReadOnlyUserCanRead(t *testing.T) {
+	env := config.GetEnv()
+	container := connectToPostgresContainer(t, env.TestPostgres16Port)
+	defer container.DB.Close()
+
+	// Step 1: Create a second database user who will create tables
+	userCreatorUsername := fmt.Sprintf("user_creator_%s", uuid.New().String()[:8])
+	userCreatorPassword := "creator_password_123"
+
+	_, err := container.DB.Exec(fmt.Sprintf(
+		`CREATE USER "%s" WITH PASSWORD '%s' LOGIN`,
+		userCreatorUsername,
+		userCreatorPassword,
+	))
+	assert.NoError(t, err)
+
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP OWNED BY "%s" CASCADE`, userCreatorUsername))
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP USER IF EXISTS "%s"`, userCreatorUsername))
+	}()
+
+	// Step 2: Grant the user_creator privileges to connect and create tables
+	_, err = container.DB.Exec(fmt.Sprintf(
+		`GRANT CONNECT ON DATABASE "%s" TO "%s"`,
+		container.Database,
+		userCreatorUsername,
+	))
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(fmt.Sprintf(
+		`GRANT USAGE ON SCHEMA public TO "%s"`,
+		userCreatorUsername,
+	))
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(fmt.Sprintf(
+		`GRANT CREATE ON SCHEMA public TO "%s"`,
+		userCreatorUsername,
+	))
+	assert.NoError(t, err)
+
+	// Step 2b: Create an initial table by user_creator so they become an object owner
+	// This is important because our fix discovers existing object owners
+	userCreatorDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		container.Host,
+		container.Port,
+		userCreatorUsername,
+		userCreatorPassword,
+		container.Database,
+	)
+	userCreatorConn, err := sqlx.Connect("postgres", userCreatorDSN)
+	assert.NoError(t, err)
+	defer userCreatorConn.Close()
+
+	initialTableName := fmt.Sprintf(
+		"public.initial_table_%s",
+		strings.ReplaceAll(uuid.New().String()[:8], "-", ""),
+	)
+	_, err = userCreatorConn.Exec(fmt.Sprintf(`
+		CREATE TABLE %s (
+			id SERIAL PRIMARY KEY,
+			data TEXT NOT NULL
+		);
+		INSERT INTO %s (data) VALUES ('initial_data');
+	`, initialTableName, initialTableName))
+	assert.NoError(t, err)
+
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s CASCADE`, initialTableName))
+	}()
+
+	// Step 3: NOW create read-only user via Databasus (as admin)
+	// At this point, user_creator already owns objects, so ALTER DEFAULT PRIVILEGES FOR ROLE should apply
+	pgModel := createPostgresModel(container)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	ctx := context.Background()
+
+	readonlyUsername, readonlyPassword, err := pgModel.CreateReadOnlyUser(
+		ctx,
+		logger,
+		nil,
+		uuid.New(),
+	)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, readonlyUsername)
+	assert.NotEmpty(t, readonlyPassword)
+
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP OWNED BY "%s" CASCADE`, readonlyUsername))
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP USER IF EXISTS "%s"`, readonlyUsername))
+	}()
+
+	// Step 4: user_creator creates a NEW table AFTER the read-only user was created
+	// This table should automatically grant SELECT to the read-only user via ALTER DEFAULT PRIVILEGES FOR ROLE
+	tableName := fmt.Sprintf(
+		"public.future_table_%s",
+		strings.ReplaceAll(uuid.New().String()[:8], "-", ""),
+	)
+	_, err = userCreatorConn.Exec(fmt.Sprintf(`
+		CREATE TABLE %s (
+			id SERIAL PRIMARY KEY,
+			data TEXT NOT NULL
+		);
+		INSERT INTO %s (data) VALUES ('test_data_1'), ('test_data_2');
+	`, tableName, tableName))
+	assert.NoError(t, err)
+
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s CASCADE`, tableName))
+	}()
+
+	// Step 5: Connect as read-only user and verify it can SELECT from the new table
+	readonlyDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		container.Host,
+		container.Port,
+		readonlyUsername,
+		readonlyPassword,
+		container.Database,
+	)
+	readonlyConn, err := sqlx.Connect("postgres", readonlyDSN)
+	assert.NoError(t, err)
+	defer readonlyConn.Close()
+
+	var count int
+	err = readonlyConn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName))
+	assert.NoError(t, err)
+	assert.Equal(
+		t,
+		2,
+		count,
+		"Read-only user should be able to SELECT from table created by different user",
+	)
+
+	// Step 6: Verify read-only user cannot write to the table
+	_, err = readonlyConn.Exec(
+		fmt.Sprintf("INSERT INTO %s (data) VALUES ('should-fail')", tableName),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+
+	// Step 7: Verify pg_dump operations (LOCK TABLE) work
+	// pg_dump needs to lock tables in ACCESS SHARE MODE for consistent backup
+	tx, err := readonlyConn.Begin()
+	assert.NoError(t, err)
+	defer tx.Rollback()
+
+	_, err = tx.Exec(fmt.Sprintf("LOCK TABLE %s IN ACCESS SHARE MODE", tableName))
+	assert.NoError(t, err, "Read-only user should be able to LOCK TABLE (needed for pg_dump)")
+
+	err = tx.Commit()
+	assert.NoError(t, err)
+}
+
+func Test_CreateReadOnlyUser_WithIncludeSchemas_OnlyGrantsAccessToSpecifiedSchemas(t *testing.T) {
+	env := config.GetEnv()
+	container := connectToPostgresContainer(t, env.TestPostgres16Port)
+	defer container.DB.Close()
+
+	// Step 1: Create multiple schemas and tables
+	_, err := container.DB.Exec(`
+		DROP SCHEMA IF EXISTS included_schema CASCADE;
+		DROP SCHEMA IF EXISTS excluded_schema CASCADE;
+		CREATE SCHEMA included_schema;
+		CREATE SCHEMA excluded_schema;
+		
+		CREATE TABLE public.public_table (id INT, data TEXT);
+		INSERT INTO public.public_table VALUES (1, 'public_data');
+		
+		CREATE TABLE included_schema.included_table (id INT, data TEXT);
+		INSERT INTO included_schema.included_table VALUES (2, 'included_data');
+		
+		CREATE TABLE excluded_schema.excluded_table (id INT, data TEXT);
+		INSERT INTO excluded_schema.excluded_table VALUES (3, 'excluded_data');
+	`)
+	assert.NoError(t, err)
+
+	defer func() {
+		_, _ = container.DB.Exec(`DROP SCHEMA IF EXISTS included_schema CASCADE`)
+		_, _ = container.DB.Exec(`DROP SCHEMA IF EXISTS excluded_schema CASCADE`)
+	}()
+
+	// Step 2: Create a second user who owns tables in both included and excluded schemas
+	userCreatorUsername := fmt.Sprintf("user_creator_%s", uuid.New().String()[:8])
+	userCreatorPassword := "creator_password_123"
+
+	_, err = container.DB.Exec(fmt.Sprintf(
+		`CREATE USER "%s" WITH PASSWORD '%s' LOGIN`,
+		userCreatorUsername,
+		userCreatorPassword,
+	))
+	assert.NoError(t, err)
+
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP OWNED BY "%s" CASCADE`, userCreatorUsername))
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP USER IF EXISTS "%s"`, userCreatorUsername))
+	}()
+
+	// Grant privileges to user_creator
+	_, err = container.DB.Exec(fmt.Sprintf(
+		`GRANT CONNECT ON DATABASE "%s" TO "%s"`,
+		container.Database,
+		userCreatorUsername,
+	))
+	assert.NoError(t, err)
+
+	for _, schema := range []string{"public", "included_schema", "excluded_schema"} {
+		_, err = container.DB.Exec(fmt.Sprintf(
+			`GRANT USAGE, CREATE ON SCHEMA %s TO "%s"`,
+			schema,
+			userCreatorUsername,
+		))
+		assert.NoError(t, err)
+	}
+
+	// User_creator creates tables in included and excluded schemas
+	userCreatorDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		container.Host,
+		container.Port,
+		userCreatorUsername,
+		userCreatorPassword,
+		container.Database,
+	)
+	userCreatorConn, err := sqlx.Connect("postgres", userCreatorDSN)
+	assert.NoError(t, err)
+	defer userCreatorConn.Close()
+
+	_, err = userCreatorConn.Exec(`
+		CREATE TABLE included_schema.user_table (id INT, data TEXT);
+		INSERT INTO included_schema.user_table VALUES (4, 'user_included_data');
+		
+		CREATE TABLE excluded_schema.user_excluded_table (id INT, data TEXT);
+		INSERT INTO excluded_schema.user_excluded_table VALUES (5, 'user_excluded_data');
+	`)
+	assert.NoError(t, err)
+
+	// Step 3: Create read-only user with IncludeSchemas = ["public", "included_schema"]
+	pgModel := createPostgresModel(container)
+	pgModel.IncludeSchemas = []string{"public", "included_schema"}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	ctx := context.Background()
+
+	readonlyUsername, readonlyPassword, err := pgModel.CreateReadOnlyUser(
+		ctx,
+		logger,
+		nil,
+		uuid.New(),
+	)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, readonlyUsername)
+	assert.NotEmpty(t, readonlyPassword)
+
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP OWNED BY "%s" CASCADE`, readonlyUsername))
+		_, _ = container.DB.Exec(fmt.Sprintf(`DROP USER IF EXISTS "%s"`, readonlyUsername))
+	}()
+
+	// Step 4: Connect as read-only user
+	readonlyDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		container.Host,
+		container.Port,
+		readonlyUsername,
+		readonlyPassword,
+		container.Database,
+	)
+	readonlyConn, err := sqlx.Connect("postgres", readonlyDSN)
+	assert.NoError(t, err)
+	defer readonlyConn.Close()
+
+	// Step 5: Verify read-only user CAN access included schemas
+	var publicData string
+	err = readonlyConn.Get(&publicData, "SELECT data FROM public.public_table LIMIT 1")
+	assert.NoError(t, err)
+	assert.Equal(t, "public_data", publicData)
+
+	var includedData string
+	err = readonlyConn.Get(&includedData, "SELECT data FROM included_schema.included_table LIMIT 1")
+	assert.NoError(t, err)
+	assert.Equal(t, "included_data", includedData)
+
+	var userIncludedData string
+	err = readonlyConn.Get(&userIncludedData, "SELECT data FROM included_schema.user_table LIMIT 1")
+	assert.NoError(t, err)
+	assert.Equal(t, "user_included_data", userIncludedData)
+
+	// Step 6: Verify read-only user CANNOT access excluded schema
+	var excludedData string
+	err = readonlyConn.Get(&excludedData, "SELECT data FROM excluded_schema.excluded_table LIMIT 1")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+
+	err = readonlyConn.Get(
+		&excludedData,
+		"SELECT data FROM excluded_schema.user_excluded_table LIMIT 1",
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+
+	// Step 7: Verify future tables in included schemas are accessible
+	_, err = userCreatorConn.Exec(`
+		CREATE TABLE included_schema.future_table (id INT, data TEXT);
+		INSERT INTO included_schema.future_table VALUES (6, 'future_data');
+	`)
+	assert.NoError(t, err)
+
+	var futureData string
+	err = readonlyConn.Get(&futureData, "SELECT data FROM included_schema.future_table LIMIT 1")
+	assert.NoError(t, err)
+	assert.Equal(
+		t,
+		"future_data",
+		futureData,
+		"Read-only user should access future tables in included schemas via ALTER DEFAULT PRIVILEGES FOR ROLE",
+	)
+
+	// Step 8: Verify future tables in excluded schema are NOT accessible
+	_, err = userCreatorConn.Exec(`
+		CREATE TABLE excluded_schema.future_excluded_table (id INT, data TEXT);
+		INSERT INTO excluded_schema.future_excluded_table VALUES (7, 'future_excluded_data');
+	`)
+	assert.NoError(t, err)
+
+	var futureExcludedData string
+	err = readonlyConn.Get(
+		&futureExcludedData,
+		"SELECT data FROM excluded_schema.future_excluded_table LIMIT 1",
+	)
+	assert.Error(t, err)
+	assert.Contains(
+		t,
+		err.Error(),
+		"permission denied",
+		"Read-only user should NOT access tables in excluded schemas",
+	)
+}
+
 func connectToPostgresContainer(t *testing.T, port string) *PostgresContainer {
 	dbName := "testdb"
 	password := "testpassword"

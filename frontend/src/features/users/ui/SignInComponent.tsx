@@ -2,10 +2,13 @@ import { EyeInvisibleOutlined, EyeTwoTone } from '@ant-design/icons';
 import { Button, Input } from 'antd';
 import { type JSX, useState } from 'react';
 
+import { useCloudflareTurnstile } from '../../../shared/hooks/useCloudflareTurnstile';
+
 import { GITHUB_CLIENT_ID, GOOGLE_CLIENT_ID, IS_EMAIL_CONFIGURED } from '../../../constants';
 import { userApi } from '../../../entity/users';
 import { StringUtils } from '../../../shared/lib';
 import { FormValidator } from '../../../shared/lib/FormValidator';
+import { CloudflareTurnstileWidget } from '../../../shared/ui/CloudflareTurnstileWidget';
 import { GithubOAuthComponent } from './oauth/GithubOAuthComponent';
 import { GoogleOAuthComponent } from './oauth/GoogleOAuthComponent';
 
@@ -28,6 +31,8 @@ export function SignInComponent({
   const [passwordError, setPasswordError] = useState(false);
 
   const [signInError, setSignInError] = useState('');
+
+  const { token, containerRef, resetCloudflareTurnstile } = useCloudflareTurnstile();
 
   const validateFieldsForSignIn = (): boolean => {
     if (!email) {
@@ -59,9 +64,11 @@ export function SignInComponent({
         await userApi.signIn({
           email,
           password,
+          cloudflareTurnstileToken: token,
         });
       } catch (e) {
         setSignInError(StringUtils.capitalizeFirstLetter((e as Error).message));
+        resetCloudflareTurnstile();
       }
 
       setLoading(false);
@@ -118,6 +125,8 @@ export function SignInComponent({
       />
 
       <div className="mt-3" />
+
+      <CloudflareTurnstileWidget containerRef={containerRef} />
 
       <Button
         disabled={isLoading}

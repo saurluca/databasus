@@ -50,21 +50,19 @@ func (s *GoogleDriveStorage) SaveFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	fileID uuid.UUID,
+	fileName string,
 	file io.Reader,
 ) error {
 	return s.withRetryOnAuth(ctx, encryptor, func(driveService *drive.Service) error {
-		filename := fileID.String()
-
 		folderID, err := s.ensureBackupsFolderExists(ctx, driveService)
 		if err != nil {
 			return fmt.Errorf("failed to create/find backups folder: %w", err)
 		}
 
-		_ = s.deleteByName(ctx, driveService, filename, folderID)
+		_ = s.deleteByName(ctx, driveService, fileName, folderID)
 
 		fileMeta := &drive.File{
-			Name:    filename,
+			Name:    fileName,
 			Parents: []string{folderID},
 		}
 
@@ -91,7 +89,7 @@ func (s *GoogleDriveStorage) SaveFile(
 		logger.Info(
 			"file uploaded to Google Drive",
 			"name",
-			filename,
+			fileName,
 			"folder",
 			"databasus_backups",
 		)
@@ -152,7 +150,7 @@ func (r *backpressureReader) Read(p []byte) (n int, err error) {
 
 func (s *GoogleDriveStorage) GetFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) (io.ReadCloser, error) {
 	var result io.ReadCloser
 	err := s.withRetryOnAuth(
@@ -164,7 +162,7 @@ func (s *GoogleDriveStorage) GetFile(
 				return fmt.Errorf("failed to find backups folder: %w", err)
 			}
 
-			fileIDGoogle, err := s.lookupFileID(driveService, fileID.String(), folderID)
+			fileIDGoogle, err := s.lookupFileID(driveService, fileName, folderID)
 			if err != nil {
 				return err
 			}
@@ -184,7 +182,7 @@ func (s *GoogleDriveStorage) GetFile(
 
 func (s *GoogleDriveStorage) DeleteFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) error {
 	ctx, cancel := context.WithTimeout(context.Background(), gdDeleteTimeout)
 	defer cancel()
@@ -195,7 +193,7 @@ func (s *GoogleDriveStorage) DeleteFile(
 			return fmt.Errorf("failed to find backups folder: %w", err)
 		}
 
-		return s.deleteByName(ctx, driveService, fileID.String(), folderID)
+		return s.deleteByName(ctx, driveService, fileName, folderID)
 	})
 }
 

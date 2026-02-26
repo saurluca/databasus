@@ -261,7 +261,7 @@ func Test_RestoreBackup_AuditLogWritten(t *testing.T) {
 
 	found := false
 	for _, log := range auditLogs.AuditLogs {
-		if strings.Contains(log.Message, "Database restored from backup") &&
+		if strings.Contains(log.Message, "Database restored for database") &&
 			strings.Contains(log.Message, database.Name) {
 			found = true
 			break
@@ -752,7 +752,7 @@ func createTestBackup(
 		context.Background(),
 		fieldEncryptor,
 		logger,
-		backup.ID,
+		backup.ID.String(),
 		reader,
 	); err != nil {
 		panic(fmt.Sprintf("Failed to create test backup file: %v", err))

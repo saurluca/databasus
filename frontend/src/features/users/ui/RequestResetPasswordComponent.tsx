@@ -1,9 +1,12 @@
 import { Button, Input } from 'antd';
 import { type JSX, useState } from 'react';
 
+import { useCloudflareTurnstile } from '../../../shared/hooks/useCloudflareTurnstile';
+
 import { userApi } from '../../../entity/users';
 import { StringUtils } from '../../../shared/lib';
 import { FormValidator } from '../../../shared/lib/FormValidator';
+import { CloudflareTurnstileWidget } from '../../../shared/ui/CloudflareTurnstileWidget';
 
 interface RequestResetPasswordComponentProps {
   onSwitchToSignIn?: () => void;
@@ -19,6 +22,8 @@ export function RequestResetPasswordComponent({
   const [isEmailError, setEmailError] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+
+  const { token, containerRef, resetCloudflareTurnstile } = useCloudflareTurnstile();
 
   const validateEmail = (): boolean => {
     if (!email) {
@@ -42,7 +47,10 @@ export function RequestResetPasswordComponent({
       setLoading(true);
 
       try {
-        const response = await userApi.sendResetPasswordCode({ email });
+        const response = await userApi.sendResetPasswordCode({
+          email,
+          cloudflareTurnstileToken: token,
+        });
         setSuccessMessage(response.message);
 
         // After successful code send, switch to reset password form
@@ -53,6 +61,7 @@ export function RequestResetPasswordComponent({
         }, 2000);
       } catch (e) {
         setError(StringUtils.capitalizeFirstLetter((e as Error).message));
+        resetCloudflareTurnstile();
       }
 
       setLoading(false);
@@ -83,6 +92,8 @@ export function RequestResetPasswordComponent({
       />
 
       <div className="mt-3" />
+
+      <CloudflareTurnstileWidget containerRef={containerRef} />
 
       <Button
         disabled={isLoading}

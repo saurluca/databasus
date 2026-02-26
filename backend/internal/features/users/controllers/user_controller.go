@@ -11,6 +11,7 @@ import (
 	user_middleware "databasus-backend/internal/features/users/middleware"
 	users_services "databasus-backend/internal/features/users/services"
 	cache_utils "databasus-backend/internal/util/cache"
+	cloudflare_turnstile "databasus-backend/internal/util/cloudflare_turnstile"
 
 	"github.com/gin-gonic/gin"
 )
@@ -51,7 +52,7 @@ func (c *UserController) RegisterProtectedRoutes(router *gin.RouterGroup) {
 // @Accept json
 // @Produce json
 // @Param request body users_dto.SignUpRequestDTO true "User signup data"
-// @Success 200
+// @Success 200 {object} users_dto.SignInResponseDTO
 // @Failure 400
 // @Router /users/signup [post]
 func (c *UserController) SignUp(ctx *gin.Context) {
@@ -61,13 +62,41 @@ func (c *UserController) SignUp(ctx *gin.Context) {
 		return
 	}
 
-	err := c.userService.SignUp(&request)
+	// Verify Cloudflare Turnstile if enabled
+	turnstileService := cloudflare_turnstile.GetCloudflareTurnstileService()
+	if turnstileService.IsEnabled() {
+		if request.CloudflareTurnstileToken == nil || *request.CloudflareTurnstileToken == "" {
+			ctx.JSON(
+				http.StatusBadRequest,
+				gin.H{"error": "Cloudflare Turnstile verification required"},
+			)
+			return
+		}
+
+		clientIP := ctx.ClientIP()
+		isValid, err := turnstileService.VerifyToken(*request.CloudflareTurnstileToken, clientIP)
+		if err != nil || !isValid {
+			ctx.JSON(
+				http.StatusBadRequest,
+				gin.H{"error": "Cloudflare Turnstile verification failed"},
+			)
+			return
+		}
+	}
+
+	user, err := c.userService.SignUp(&request)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"message": "User created successfully"})
+	response, err := c.userService.GenerateAccessToken(user)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, response)
 }
 
 // SignIn
@@ -86,6 +115,28 @@ func (c *UserController) SignIn(ctx *gin.Context) {
 	if err := ctx.ShouldBindJSON(&request); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
+	}
+
+	// Verify Cloudflare Turnstile if enabled
+	turnstileService := cloudflare_turnstile.GetCloudflareTurnstileService()
+	if turnstileService.IsEnabled() {
+		if request.CloudflareTurnstileToken == nil || *request.CloudflareTurnstileToken == "" {
+			ctx.JSON(
+				http.StatusBadRequest,
+				gin.H{"error": "Cloudflare Turnstile verification required"},
+			)
+			return
+		}
+
+		clientIP := ctx.ClientIP()
+		isValid, err := turnstileService.VerifyToken(*request.CloudflareTurnstileToken, clientIP)
+		if err != nil || !isValid {
+			ctx.JSON(
+				http.StatusBadRequest,
+				gin.H{"error": "Cloudflare Turnstile verification failed"},
+			)
+			return
+		}
 	}
 
 	allowed, _ := c.rateLimiter.CheckLimit(request.Email, "signin", 10, 1*time.Minute)
@@ -361,6 +412,28 @@ func (c *UserController) SendResetPasswordCode(ctx *gin.Context) {
 	if err := ctx.ShouldBindJSON(&request); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
+	}
+
+	// Verify Cloudflare Turnstile if enabled
+	turnstileService := cloudflare_turnstile.GetCloudflareTurnstileService()
+	if turnstileService.IsEnabled() {
+		if request.CloudflareTurnstileToken == nil || *request.CloudflareTurnstileToken == "" {
+			ctx.JSON(
+				http.StatusBadRequest,
+				gin.H{"error": "Cloudflare Turnstile verification required"},
+			)
+			return
+		}
+
+		clientIP := ctx.ClientIP()
+		isValid, err := turnstileService.VerifyToken(*request.CloudflareTurnstileToken, clientIP)
+		if err != nil || !isValid {
+			ctx.JSON(
+				http.StatusBadRequest,
+				gin.H{"error": "Cloudflare Turnstile verification failed"},
+			)
+			return
+		}
 	}
 
 	allowed, _ := c.rateLimiter.CheckLimit(

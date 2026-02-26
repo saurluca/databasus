@@ -8,7 +8,8 @@ import (
 )
 
 type Backup struct {
-	ID uuid.UUID `json:"id" gorm:"column:id;type:uuid;primaryKey"`
+	ID       uuid.UUID `json:"id"       gorm:"column:id;type:uuid;primaryKey"`
+	FileName string    `json:"fileName" gorm:"column:file_name;type:text;not null"`
 
 	DatabaseID uuid.UUID `json:"databaseId" gorm:"column:database_id;type:uuid;not null"`
 	StorageID  uuid.UUID `json:"storageId"  gorm:"column:storage_id;type:uuid;not null"`

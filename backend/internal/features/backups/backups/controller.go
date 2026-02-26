@@ -6,6 +6,7 @@ import (
 	backups_download "databasus-backend/internal/features/backups/backups/download"
 	"databasus-backend/internal/features/databases"
 	users_middleware "databasus-backend/internal/features/users/middleware"
+	files_utils "databasus-backend/internal/util/files"
 	"fmt"
 	"io"
 	"net/http"
@@ -304,7 +305,6 @@ func (c *BackupController) GetFile(ctx *gin.Context) {
 	_, err = io.Copy(ctx.Writer, rateLimitedReader)
 	if err != nil {
 		fmt.Printf("Error streaming file: %v\n", err)
-		return
 	}
 
 	c.backupService.WriteAuditLogForDownload(downloadToken.UserID, backup, database)
@@ -322,7 +322,7 @@ func (c *BackupController) generateBackupFilename(
 	timestamp := backup.CreatedAt.Format("2006-01-02_15-04-05")
 
 	// Sanitize database name for filename (replace spaces and special chars)
-	safeName := sanitizeFilename(database.Name)
+	safeName := files_utils.SanitizeFilename(database.Name)
 
 	// Determine extension based on database type
 	extension := c.getBackupExtension(database.Type)
@@ -344,33 +344,6 @@ func (c *BackupController) getBackupExtension(
 	default:
 		return ".backup"
 	}
-}
-
-func sanitizeFilename(name string) string {
-	// Replace characters that are invalid in filenames
-	replacer := map[rune]rune{
-		' ':  '_',
-		'/':  '-',
-		'\\': '-',
-		':':  '-',
-		'*':  '-',
-		'?':  '-',
-		'"':  '-',
-		'<':  '-',
-		'>':  '-',
-		'|':  '-',
-	}
-
-	result := make([]rune, 0, len(name))
-	for _, char := range name {
-		if replacement, exists := replacer[char]; exists {
-			result = append(result, replacement)
-		} else {
-			result = append(result, char)
-		}
-	}
-
-	return string(result)
 }
 
 func (c *BackupController) startDownloadHeartbeat(ctx context.Context, userID uuid.UUID) {

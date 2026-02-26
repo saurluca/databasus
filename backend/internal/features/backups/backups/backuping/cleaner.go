@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	cleanerTickerInterval = 1 * time.Minute
+	cleanerTickerInterval   = 1 * time.Minute
+	recentBackupGracePeriod = 60 * time.Minute
 )
 
 type BackupCleaner struct {
@@ -51,8 +52,8 @@ func (c *BackupCleaner) Run(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := c.cleanOldBackups(); err != nil {
-					c.logger.Error("Failed to clean old backups", "error", err)
+				if err := c.cleanByRetentionPolicy(); err != nil {
+					c.logger.Error("Failed to clean backups by retention policy", "error", err)
 				}
 
 				if err := c.cleanExceededBackups(); err != nil {
@@ -79,13 +80,18 @@ func (c *BackupCleaner) DeleteBackup(backup *backups_core.Backup) error {
 		return err
 	}
 
-	err = storage.DeleteFile(c.fieldEncryptor, backup.ID)
+	err = storage.DeleteFile(c.fieldEncryptor, backup.FileName)
 	if err != nil {
 		// we do not return error here, because sometimes clean up performed
 		// before unavailable storage removal or change - therefore we should
 		// proceed even in case of error. It's possible that some S3 or
 		// storage is not available yet, it should not block us
 		c.logger.Error("Failed to delete backup file", "error", err)
+	}
+
+	metadataFileName := backup.FileName + ".metadata"
+	if err := storage.DeleteFile(c.fieldEncryptor, metadataFileName); err != nil {
+		c.logger.Error("Failed to delete backup metadata file", "error", err)
 	}
 
 	return c.backupRepository.DeleteByID(backup.ID)
@@ -95,49 +101,30 @@ func (c *BackupCleaner) AddBackupRemoveListener(listener backups_core.BackupRemo
 	c.backupRemoveListeners = append(c.backupRemoveListeners, listener)
 }
 
-func (c *BackupCleaner) cleanOldBackups() error {
+func (c *BackupCleaner) cleanByRetentionPolicy() error {
 	enabledBackupConfigs, err := c.backupConfigService.GetBackupConfigsWithEnabledBackups()
 	if err != nil {
 		return err
 	}
 
 	for _, backupConfig := range enabledBackupConfigs {
-		backupStorePeriod := backupConfig.StorePeriod
+		var cleanErr error
 
-		if backupStorePeriod == period.PeriodForever {
-			continue
+		switch backupConfig.RetentionPolicyType {
+		case backups_config.RetentionPolicyTypeCount:
+			cleanErr = c.cleanByCount(backupConfig)
+		case backups_config.RetentionPolicyTypeGFS:
+			cleanErr = c.cleanByGFS(backupConfig)
+		default:
+			cleanErr = c.cleanByTimePeriod(backupConfig)
 		}
 
-		storeDuration := backupStorePeriod.ToDuration()
-		dateBeforeBackupsShouldBeDeleted := time.Now().UTC().Add(-storeDuration)
-
-		oldBackups, err := c.backupRepository.FindBackupsBeforeDate(
-			backupConfig.DatabaseID,
-			dateBeforeBackupsShouldBeDeleted,
-		)
-		if err != nil {
+		if cleanErr != nil {
 			c.logger.Error(
-				"Failed to find old backups for database",
-				"databaseId",
-				backupConfig.DatabaseID,
-				"error",
-				err,
-			)
-			continue
-		}
-
-		for _, backup := range oldBackups {
-			if err := c.DeleteBackup(backup); err != nil {
-				c.logger.Error("Failed to delete old backup", "backupId", backup.ID, "error", err)
-				continue
-			}
-
-			c.logger.Info(
-				"Deleted old backup",
-				"backupId",
-				backup.ID,
-				"databaseId",
-				backupConfig.DatabaseID,
+				"Failed to clean backups by retention policy",
+				"databaseId", backupConfig.DatabaseID,
+				"policy", backupConfig.RetentionPolicyType,
+				"error", cleanErr,
 			)
 		}
 	}
@@ -169,6 +156,158 @@ func (c *BackupCleaner) cleanExceededBackups() error {
 			)
 			continue
 		}
+	}
+
+	return nil
+}
+
+func (c *BackupCleaner) cleanByTimePeriod(backupConfig *backups_config.BackupConfig) error {
+	if backupConfig.RetentionTimePeriod == "" {
+		return nil
+	}
+
+	if backupConfig.RetentionTimePeriod == period.PeriodForever {
+		return nil
+	}
+
+	storeDuration := backupConfig.RetentionTimePeriod.ToDuration()
+	dateBeforeBackupsShouldBeDeleted := time.Now().UTC().Add(-storeDuration)
+
+	oldBackups, err := c.backupRepository.FindBackupsBeforeDate(
+		backupConfig.DatabaseID,
+		dateBeforeBackupsShouldBeDeleted,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to find old backups for database %s: %w",
+			backupConfig.DatabaseID,
+			err,
+		)
+	}
+
+	for _, backup := range oldBackups {
+		if isRecentBackup(backup) {
+			continue
+		}
+
+		if err := c.DeleteBackup(backup); err != nil {
+			c.logger.Error("Failed to delete old backup", "backupId", backup.ID, "error", err)
+			continue
+		}
+
+		c.logger.Info(
+			"Deleted old backup",
+			"backupId", backup.ID,
+			"databaseId", backupConfig.DatabaseID,
+		)
+	}
+
+	return nil
+}
+
+func (c *BackupCleaner) cleanByCount(backupConfig *backups_config.BackupConfig) error {
+	if backupConfig.RetentionCount <= 0 {
+		return nil
+	}
+
+	completedBackups, err := c.backupRepository.FindByDatabaseIdAndStatus(
+		backupConfig.DatabaseID,
+		backups_core.BackupStatusCompleted,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to find completed backups for database %s: %w",
+			backupConfig.DatabaseID,
+			err,
+		)
+	}
+
+	// completedBackups are ordered newest first; delete everything beyond position RetentionCount
+	if len(completedBackups) <= backupConfig.RetentionCount {
+		return nil
+	}
+
+	toDelete := completedBackups[backupConfig.RetentionCount:]
+	for _, backup := range toDelete {
+		if isRecentBackup(backup) {
+			continue
+		}
+
+		if err := c.DeleteBackup(backup); err != nil {
+			c.logger.Error(
+				"Failed to delete backup by count policy",
+				"backupId",
+				backup.ID,
+				"error",
+				err,
+			)
+			continue
+		}
+
+		c.logger.Info(
+			"Deleted backup by count policy",
+			"backupId", backup.ID,
+			"databaseId", backupConfig.DatabaseID,
+			"retentionCount", backupConfig.RetentionCount,
+		)
+	}
+
+	return nil
+}
+
+func (c *BackupCleaner) cleanByGFS(backupConfig *backups_config.BackupConfig) error {
+	if backupConfig.RetentionGfsHours <= 0 && backupConfig.RetentionGfsDays <= 0 &&
+		backupConfig.RetentionGfsWeeks <= 0 && backupConfig.RetentionGfsMonths <= 0 &&
+		backupConfig.RetentionGfsYears <= 0 {
+		return nil
+	}
+
+	completedBackups, err := c.backupRepository.FindByDatabaseIdAndStatus(
+		backupConfig.DatabaseID,
+		backups_core.BackupStatusCompleted,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to find completed backups for database %s: %w",
+			backupConfig.DatabaseID,
+			err,
+		)
+	}
+
+	keepSet := buildGFSKeepSet(
+		completedBackups,
+		backupConfig.RetentionGfsHours,
+		backupConfig.RetentionGfsDays,
+		backupConfig.RetentionGfsWeeks,
+		backupConfig.RetentionGfsMonths,
+		backupConfig.RetentionGfsYears,
+	)
+
+	for _, backup := range completedBackups {
+		if keepSet[backup.ID] {
+			continue
+		}
+
+		if isRecentBackup(backup) {
+			continue
+		}
+
+		if err := c.DeleteBackup(backup); err != nil {
+			c.logger.Error(
+				"Failed to delete backup by GFS policy",
+				"backupId",
+				backup.ID,
+				"error",
+				err,
+			)
+			continue
+		}
+
+		c.logger.Info(
+			"Deleted backup by GFS policy",
+			"backupId", backup.ID,
+			"databaseId", backupConfig.DatabaseID,
+		)
 	}
 
 	return nil
@@ -210,6 +349,21 @@ func (c *BackupCleaner) cleanExceededBackupsForDatabase(
 		}
 
 		backup := oldestBackups[0]
+		if isRecentBackup(backup) {
+			c.logger.Warn(
+				"Oldest backup is too recent to delete, stopping size cleanup",
+				"databaseId",
+				databaseID,
+				"backupId",
+				backup.ID,
+				"totalSizeMB",
+				backupsTotalSizeMB,
+				"limitMB",
+				limitperDbMB,
+			)
+			break
+		}
+
 		if err := c.DeleteBackup(backup); err != nil {
 			c.logger.Error(
 				"Failed to delete exceeded backup",
@@ -239,4 +393,69 @@ func (c *BackupCleaner) cleanExceededBackupsForDatabase(
 	}
 
 	return nil
+}
+
+func isRecentBackup(backup *backups_core.Backup) bool {
+	return time.Since(backup.CreatedAt) < recentBackupGracePeriod
+}
+
+// buildGFSKeepSet determines which backups to retain under the GFS rotation scheme.
+// Backups must be sorted newest-first. A backup can fill multiple slots simultaneously
+// (e.g. the newest backup of a year also fills the monthly, weekly, daily, and hourly slot).
+func buildGFSKeepSet(
+	backups []*backups_core.Backup,
+	hours, days, weeks, months, years int,
+) map[uuid.UUID]bool {
+	keep := make(map[uuid.UUID]bool)
+
+	hoursSeen := make(map[string]bool)
+	daysSeen := make(map[string]bool)
+	weeksSeen := make(map[string]bool)
+	monthsSeen := make(map[string]bool)
+	yearsSeen := make(map[string]bool)
+
+	hoursKept, daysKept, weeksKept, monthsKept, yearsKept := 0, 0, 0, 0, 0
+
+	for _, backup := range backups {
+		t := backup.CreatedAt
+
+		hourKey := t.Format("2006-01-02-15")
+		dayKey := t.Format("2006-01-02")
+		weekYear, week := t.ISOWeek()
+		weekKey := fmt.Sprintf("%d-%02d", weekYear, week)
+		monthKey := t.Format("2006-01")
+		yearKey := t.Format("2006")
+
+		if hours > 0 && hoursKept < hours && !hoursSeen[hourKey] {
+			keep[backup.ID] = true
+			hoursSeen[hourKey] = true
+			hoursKept++
+		}
+
+		if days > 0 && daysKept < days && !daysSeen[dayKey] {
+			keep[backup.ID] = true
+			daysSeen[dayKey] = true
+			daysKept++
+		}
+
+		if weeks > 0 && weeksKept < weeks && !weeksSeen[weekKey] {
+			keep[backup.ID] = true
+			weeksSeen[weekKey] = true
+			weeksKept++
+		}
+
+		if months > 0 && monthsKept < months && !monthsSeen[monthKey] {
+			keep[backup.ID] = true
+			monthsSeen[monthKey] = true
+			monthsKept++
+		}
+
+		if years > 0 && yearsKept < years && !yearsSeen[yearKey] {
+			keep[backup.ID] = true
+			yearsSeen[yearKey] = true
+			yearsKept++
+		}
+	}
+
+	return keep
 }

@@ -7,6 +7,7 @@ export type ParseResult = {
   authDatabase: string;
   useTls: boolean;
   isSrv: boolean;
+  isDirectConnection: boolean;
 };
 
 export type ParseError = {
@@ -69,6 +70,7 @@ export class MongodbConnectionStringParser {
       const database = decodeURIComponent(url.pathname.slice(1));
       const authDatabase = this.getAuthSource(url.search) || 'admin';
       const useTls = isSrv ? true : this.checkTlsMode(url.search);
+      const isDirectConnection = this.checkDirectConnection(url.search);
 
       if (!host) {
         return { error: 'Host is missing from connection string' };
@@ -87,6 +89,7 @@ export class MongodbConnectionStringParser {
         authDatabase,
         useTls,
         isSrv,
+        isDirectConnection,
       };
     } catch (e) {
       return {
@@ -133,6 +136,7 @@ export class MongodbConnectionStringParser {
       }
 
       const useTls = this.isTlsEnabled(tls);
+      const isDirectConnection = params['directConnection'] === 'true';
 
       return {
         host,
@@ -143,6 +147,7 @@ export class MongodbConnectionStringParser {
         authDatabase,
         useTls,
         isSrv: false,
+        isDirectConnection,
       };
     } catch (e) {
       return {
@@ -160,6 +165,16 @@ export class MongodbConnectionStringParser {
     );
 
     return params.get('authSource') || params.get('authDatabase') || undefined;
+  }
+
+  private static checkDirectConnection(queryString: string | undefined | null): boolean {
+    if (!queryString) return false;
+
+    const params = new URLSearchParams(
+      queryString.startsWith('?') ? queryString.slice(1) : queryString,
+    );
+
+    return params.get('directConnection') === 'true';
   }
 
   private static checkTlsMode(queryString: string | undefined | null): boolean {

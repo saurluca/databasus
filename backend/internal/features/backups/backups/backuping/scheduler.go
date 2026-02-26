@@ -13,7 +13,9 @@ import (
 	"databasus-backend/internal/config"
 	backups_core "databasus-backend/internal/features/backups/backups/core"
 	backups_config "databasus-backend/internal/features/backups/config"
+	"databasus-backend/internal/features/databases"
 	task_cancellation "databasus-backend/internal/features/tasks/cancellation"
+	files_utils "databasus-backend/internal/util/files"
 )
 
 const (
@@ -27,6 +29,7 @@ type BackupsScheduler struct {
 	backupConfigService *backups_config.BackupConfigService
 	taskCancelManager   *task_cancellation.TaskCancelManager
 	backupNodesRegistry *BackupNodesRegistry
+	databaseService     *databases.DatabaseService
 
 	lastBackupTime time.Time
 	logger         *slog.Logger
@@ -113,28 +116,28 @@ func (s *BackupsScheduler) IsBackupNodesAvailable() bool {
 	return len(nodes) > 0
 }
 
-func (s *BackupsScheduler) StartBackup(databaseID uuid.UUID, isCallNotifier bool) {
-	backupConfig, err := s.backupConfigService.GetBackupConfigByDbId(databaseID)
+func (s *BackupsScheduler) StartBackup(database *databases.Database, isCallNotifier bool) {
+	backupConfig, err := s.backupConfigService.GetBackupConfigByDbId(database.ID)
 	if err != nil {
 		s.logger.Error("Failed to get backup config by database ID", "error", err)
 		return
 	}
 
 	if backupConfig.StorageID == nil {
-		s.logger.Error("Backup config storage ID is nil", "databaseId", databaseID)
+		s.logger.Error("Backup config storage ID is nil", "databaseId", database.ID)
 		return
 	}
 
 	// Check for existing in-progress backups
 	inProgressBackups, err := s.backupRepository.FindByDatabaseIdAndStatus(
-		databaseID,
+		database.ID,
 		backups_core.BackupStatusInProgress,
 	)
 	if err != nil {
 		s.logger.Error(
 			"Failed to check for in-progress backups",
 			"databaseId",
-			databaseID,
+			database.ID,
 			"error",
 			err,
 		)
@@ -145,7 +148,7 @@ func (s *BackupsScheduler) StartBackup(databaseID uuid.UUID, isCallNotifier bool
 		s.logger.Warn(
 			"Backup already in progress for database, skipping new backup",
 			"databaseId",
-			databaseID,
+			database.ID,
 			"existingBackupId",
 			inProgressBackups[0].ID,
 		)
@@ -164,13 +167,22 @@ func (s *BackupsScheduler) StartBackup(databaseID uuid.UUID, isCallNotifier bool
 		return
 	}
 
-	fmt.Println("make backup")
+	backupID := uuid.New()
+	timestamp := time.Now().UTC()
+
 	backup := &backups_core.Backup{
+		ID: backupID,
+		FileName: fmt.Sprintf(
+			"%s-%s-%s",
+			files_utils.SanitizeFilename(database.Name),
+			timestamp.Format("20060102-150405"),
+			backupID.String(),
+		),
 		DatabaseID:   backupConfig.DatabaseID,
 		StorageID:    *backupConfig.StorageID,
 		Status:       backups_core.BackupStatusInProgress,
 		BackupSizeMb: 0,
-		CreatedAt:    time.Now().UTC(),
+		CreatedAt:    timestamp,
 	}
 
 	if err := s.backupRepository.Save(backup); err != nil {
@@ -224,8 +236,8 @@ func (s *BackupsScheduler) StartBackup(databaseID uuid.UUID, isCallNotifier bool
 		s.backupToNodeRelations[*leastBusyNodeID] = relation
 	} else {
 		s.backupToNodeRelations[*leastBusyNodeID] = BackupToNodeRelation{
-			NodeID:     *leastBusyNodeID,
-			BackupsIDs: []uuid.UUID{backup.ID},
+			*leastBusyNodeID,
+			[]uuid.UUID{backup.ID},
 		}
 	}
 
@@ -329,7 +341,13 @@ func (s *BackupsScheduler) runPendingBackups() error {
 				backupConfig.BackupInterval.Interval,
 			)
 
-			s.StartBackup(backupConfig.DatabaseID, remainedBackupTryCount == 1)
+			database, err := s.databaseService.GetDatabaseByID(backupConfig.DatabaseID)
+			if err != nil {
+				s.logger.Error("Failed to get database by ID", "error", err)
+				continue
+			}
+
+			s.StartBackup(database, remainedBackupTryCount == 1)
 			continue
 		}
 	}

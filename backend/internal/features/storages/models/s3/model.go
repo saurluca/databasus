@@ -55,7 +55,7 @@ func (s *S3Storage) SaveFile(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	fileID uuid.UUID,
+	fileName string,
 	file io.Reader,
 ) error {
 	select {
@@ -69,7 +69,7 @@ func (s *S3Storage) SaveFile(
 		return err
 	}
 
-	objectKey := s.buildObjectKey(fileID.String())
+	objectKey := s.buildObjectKey(fileName)
 
 	uploadID, err := coreClient.NewMultipartUpload(
 		ctx,
@@ -184,14 +184,14 @@ func (s *S3Storage) SaveFile(
 
 func (s *S3Storage) GetFile(
 	encryptor encryption.FieldEncryptor,
-	fileID uuid.UUID,
+	fileName string,
 ) (io.ReadCloser, error) {
 	client, err := s.getClient(encryptor)
 	if err != nil {
 		return nil, err
 	}
 
-	objectKey := s.buildObjectKey(fileID.String())
+	objectKey := s.buildObjectKey(fileName)
 
 	object, err := client.GetObject(
 		context.TODO(),
@@ -221,13 +221,13 @@ func (s *S3Storage) GetFile(
 	return object, nil
 }
 
-func (s *S3Storage) DeleteFile(encryptor encryption.FieldEncryptor, fileID uuid.UUID) error {
+func (s *S3Storage) DeleteFile(encryptor encryption.FieldEncryptor, fileName string) error {
 	client, err := s.getClient(encryptor)
 	if err != nil {
 		return err
 	}
 
-	objectKey := s.buildObjectKey(fileID.String())
+	objectKey := s.buildObjectKey(fileName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), s3DeleteTimeout)
 	defer cancel()

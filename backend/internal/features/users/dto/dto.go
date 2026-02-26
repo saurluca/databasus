@@ -9,14 +9,16 @@ import (
 )
 
 type SignUpRequestDTO struct {
-	Email    string `json:"email"    binding:"required"`
-	Password string `json:"password" binding:"required,min=8"`
-	Name     string `json:"name"     binding:"required"`
+	Email                    string  `json:"email"                    binding:"required"`
+	Password                 string  `json:"password"                 binding:"required,min=8"`
+	Name                     string  `json:"name"                     binding:"required"`
+	CloudflareTurnstileToken *string `json:"cloudflareTurnstileToken"`
 }
 
 type SignInRequestDTO struct {
-	Email    string `json:"email"    binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Email                    string  `json:"email"                    binding:"required"`
+	Password                 string  `json:"password"                 binding:"required"`
+	CloudflareTurnstileToken *string `json:"cloudflareTurnstileToken"`
 }
 
 type SignInResponseDTO struct {
@@ -94,7 +96,8 @@ type OAuthCallbackResponseDTO struct {
 }
 
 type SendResetPasswordCodeRequestDTO struct {
-	Email string `json:"email" binding:"required,email"`
+	Email                    string  `json:"email"                    binding:"required,email"`
+	CloudflareTurnstileToken *string `json:"cloudflareTurnstileToken"`
 }
 
 type ResetPasswordRequestDTO struct {

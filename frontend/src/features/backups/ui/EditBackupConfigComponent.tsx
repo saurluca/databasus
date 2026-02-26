@@ -20,6 +20,7 @@ import {
   type BackupConfig,
   BackupEncryption,
   type DatabasePlan,
+  RetentionPolicyType,
   backupConfigApi,
 } from '../../../entity/backups';
 import { BackupNotificationType } from '../../../entity/backups/model/BackupNotificationType';
@@ -64,6 +65,15 @@ const weekdayOptions = [
   { value: 7, label: 'Sun' },
 ];
 
+const retentionPolicyOptions = [
+  {
+    label: 'GFS (keep last N hourly, daily, weekly, monthly and yearly backups)',
+    value: RetentionPolicyType.GFS,
+  },
+  { label: 'Time period (last N days)', value: RetentionPolicyType.TimePeriod },
+  { label: 'Count (N last backups)', value: RetentionPolicyType.Count },
+];
+
 export const EditBackupConfigComponent = ({
   user,
   database,
@@ -95,6 +105,7 @@ export const EditBackupConfigComponent = ({
     (backupConfig?.maxBackupSizeMb ?? 0) > 0 ||
     (backupConfig?.maxBackupsTotalSizeMb ?? 0) > 0;
   const [isShowAdvanced, setShowAdvanced] = useState(hasAdvancedValues);
+  const [isShowGfsHint, setShowGfsHint] = useState(false);
 
   const timeFormat = useMemo(() => {
     const is12 = getIs12Hour();
@@ -242,8 +253,20 @@ export const EditBackupConfigComponent = ({
               timeOfDay: '00:00',
             },
             storage: undefined,
-            storePeriod:
-              plan.maxStoragePeriod === Period.FOREVER ? Period.THREE_MONTH : plan.maxStoragePeriod,
+            retentionPolicyType: IS_CLOUD
+              ? RetentionPolicyType.GFS
+              : RetentionPolicyType.TimePeriod,
+            retentionTimePeriod: IS_CLOUD
+              ? plan.maxStoragePeriod === Period.FOREVER
+                ? Period.THREE_MONTH
+                : plan.maxStoragePeriod
+              : Period.THREE_MONTH,
+            retentionCount: 100,
+            retentionGfsHours: 24,
+            retentionGfsDays: 7,
+            retentionGfsWeeks: 4,
+            retentionGfsMonths: 12,
+            retentionGfsYears: 3,
             sendNotificationsOn: [BackupNotificationType.BackupFailed],
             isRetryIfFailed: true,
             maxFailedTriesCount: 3,
@@ -295,10 +318,27 @@ export const EditBackupConfigComponent = ({
       ? getLocalDayOfMonth(backupInterval.dayOfMonth, backupInterval.timeOfDay)
       : backupInterval?.dayOfMonth;
 
-  // mandatory-field check
+  const retentionPolicyType = backupConfig.retentionPolicyType ?? RetentionPolicyType.TimePeriod;
+
+  const isRetentionValid = (() => {
+    switch (retentionPolicyType) {
+      case RetentionPolicyType.TimePeriod:
+        return Boolean(backupConfig.retentionTimePeriod);
+      case RetentionPolicyType.Count:
+        return (backupConfig.retentionCount ?? 0) > 0;
+      case RetentionPolicyType.GFS:
+        return (
+          (backupConfig.retentionGfsDays ?? 0) > 0 ||
+          (backupConfig.retentionGfsWeeks ?? 0) > 0 ||
+          (backupConfig.retentionGfsMonths ?? 0) > 0 ||
+          (backupConfig.retentionGfsYears ?? 0) > 0
+        );
+    }
+  })();
+
   const isAllFieldsFilled =
     !backupConfig.isBackupsEnabled ||
-    (Boolean(backupConfig.storePeriod) &&
+    (isRetentionValid &&
       Boolean(backupConfig.storage?.id) &&
       Boolean(backupConfig.encryption) &&
       Boolean(backupInterval?.interval) &&
@@ -467,7 +507,7 @@ export const EditBackupConfigComponent = ({
         </>
       )}
 
-      <div className="mt-2 mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
+      <div className="mt-5 mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
         <div className="mb-1 min-w-[150px] sm:mb-0">Storage</div>
         <div className="flex w-full items-center">
           <Select
@@ -530,23 +570,160 @@ export const EditBackupConfigComponent = ({
         </div>
       )}
 
-      <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
-        <div className="mb-1 min-w-[150px] sm:mb-0">Store period</div>
-        <div className="flex items-center">
+      <div className="mt-5 mb-1 flex w-full flex-col items-start sm:flex-row sm:items-start">
+        <div className="mt-1 mb-1 min-w-[150px] sm:mb-0">Retention policy</div>
+        <div className="flex flex-col gap-1">
           <Select
-            value={backupConfig.storePeriod}
-            onChange={(v) => updateBackupConfig({ storePeriod: v })}
+            value={retentionPolicyType}
+            options={retentionPolicyOptions}
             size="small"
             className="w-[200px]"
-            options={availablePeriods}
+            popupMatchSelectWidth={false}
+            onChange={(v) => {
+              const type = v as RetentionPolicyType;
+              const updates: Partial<typeof backupConfig> = { retentionPolicyType: type };
+
+              if (type === RetentionPolicyType.GFS) {
+                updates.retentionGfsHours = 24;
+                updates.retentionGfsDays = 7;
+                updates.retentionGfsWeeks = 4;
+                updates.retentionGfsMonths = 12;
+                updates.retentionGfsYears = 3;
+              } else if (type === RetentionPolicyType.Count) {
+                updates.retentionCount = 100;
+              }
+
+              updateBackupConfig(updates);
+            }}
           />
 
-          <Tooltip
-            className="cursor-pointer"
-            title="How long to keep the backups? Make sure you have enough storage space."
-          >
-            <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
-          </Tooltip>
+          {retentionPolicyType === RetentionPolicyType.TimePeriod && (
+            <div className="flex items-center">
+              <Select
+                value={backupConfig.retentionTimePeriod}
+                onChange={(v) => updateBackupConfig({ retentionTimePeriod: v })}
+                size="small"
+                className="w-[200px]"
+                options={availablePeriods}
+              />
+
+              <Tooltip
+                className="cursor-pointer"
+                title="How long to keep the backups. Backups older than this period are automatically deleted."
+              >
+                <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+              </Tooltip>
+            </div>
+          )}
+
+          {retentionPolicyType === RetentionPolicyType.Count && (
+            <div className="flex items-center">
+              <InputNumber
+                min={1}
+                value={backupConfig.retentionCount}
+                onChange={(v) => updateBackupConfig({ retentionCount: v ?? 1 })}
+                size="small"
+                className="w-[80px]"
+              />
+              <span className="ml-2 text-sm text-gray-600 dark:text-gray-400">
+                most recent backups
+              </span>
+
+              <Tooltip
+                className="cursor-pointer"
+                title="Keep only the specified number of most recent backups. Older backups beyond this count are automatically deleted."
+              >
+                <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+              </Tooltip>
+            </div>
+          )}
+
+          {retentionPolicyType === RetentionPolicyType.GFS && (
+            <>
+              <div>
+                <span
+                  className="cursor-pointer text-xs text-blue-600 hover:text-blue-800"
+                  onClick={() => setShowGfsHint(!isShowGfsHint)}
+                >
+                  {isShowGfsHint ? 'Hide' : 'What is GFS (Grandfather-Father-Son)?'}
+                </span>
+
+                {isShowGfsHint && (
+                  <div className="mt-1 max-w-[280px] text-xs text-gray-600 dark:text-gray-400">
+                    GFS (Grandfather-Father-Son) rotation: keep the last N hourly, daily, weekly,
+                    monthly and yearly backups. This allows keeping backups over long periods of
+                    time within a reasonable storage space.
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="w-[110px] text-sm text-gray-600 dark:text-gray-400">
+                    Hourly backups
+                  </span>
+                  <InputNumber
+                    min={0}
+                    value={backupConfig.retentionGfsHours}
+                    onChange={(v) => updateBackupConfig({ retentionGfsHours: v ?? 0 })}
+                    size="small"
+                    className="w-[80px]"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="w-[110px] text-sm text-gray-600 dark:text-gray-400">
+                    Daily backups
+                  </span>
+                  <InputNumber
+                    min={0}
+                    value={backupConfig.retentionGfsDays}
+                    onChange={(v) => updateBackupConfig({ retentionGfsDays: v ?? 0 })}
+                    size="small"
+                    className="w-[80px]"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="w-[110px] text-sm text-gray-600 dark:text-gray-400">
+                    Weekly backups
+                  </span>
+                  <InputNumber
+                    min={0}
+                    value={backupConfig.retentionGfsWeeks}
+                    onChange={(v) => updateBackupConfig({ retentionGfsWeeks: v ?? 0 })}
+                    size="small"
+                    className="w-[80px]"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="w-[110px] text-sm text-gray-600 dark:text-gray-400">
+                    Monthly backups
+                  </span>
+                  <InputNumber
+                    min={0}
+                    value={backupConfig.retentionGfsMonths}
+                    onChange={(v) => updateBackupConfig({ retentionGfsMonths: v ?? 0 })}
+                    size="small"
+                    className="w-[80px]"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-[110px] text-sm text-gray-600 dark:text-gray-400">
+                    Yearly backups
+                  </span>
+                  <InputNumber
+                    min={0}
+                    value={backupConfig.retentionGfsYears}
+                    onChange={(v) => updateBackupConfig({ retentionGfsYears: v ?? 0 })}
+                    size="small"
+                    className="w-[80px]"
+                  />
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
