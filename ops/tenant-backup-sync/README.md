@@ -54,7 +54,7 @@ Schedule defaults for **newly registered** databases:
 
 `timeOfDay` is derived as `crc32(database_name) % slot_count` inside the window (stable across re-runs). With the defaults that is 48 slots across `04:00`–`07:55`. Already-registered databases are left unchanged (including any existing `02:00`–`04:00` schedules).
 
-Other defaults: `3_MONTH` retention.
+`SSL_MODE` applies to both Databasus-registered backup connections and this script’s direct admin PG connections (`list` / role rollback). Other defaults: `3_MONTH` retention.
 
 ## Behavior
 
@@ -62,7 +62,7 @@ Other defaults: `3_MONTH` retention.
 2. Skips the default system DB, anything in `PG_EXCLUDE_DATABASES`, and names outside `^[A-Za-z0-9_-]+$`
 3. Diffs against Databasus on `(host, port, database)`
 4. For each missing DB: create read-only user → register → enable backup config with a hash-staggered `timeOfDay`
-5. On create/config failure: drops the just-created role (logs username if drop fails)
+5. On create/config failure: deletes the Databasus registration (if created) then drops the just-created role (logs IDs if either cleanup fails)
 6. Triggers at most `MAX_IMMEDIATE_BACKUPS` first backups sequentially; the rest wait for the schedule
 
 Overlapping cron runs exit immediately via `/tmp/tenant-backup-sync.lock`.

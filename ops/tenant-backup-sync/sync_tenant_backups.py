@@ -234,6 +234,7 @@ def admin_connect(config: Config, database: str = "post" + "gres") -> psycopg.Co
         JSON_SECRET_KEY: config.pg_admin_secret,
         "dbname": database,
         "connect_timeout": 15,
+        "sslmode": config.ssl_mode,
     }
     return psycopg.connect(**connect_kwargs)
 
@@ -411,6 +412,26 @@ class DatabasusClient:
             time_of_day,
         )
 
+    def delete_database(self, *, database_id: str, database_name: str) -> None:
+        try:
+            response = self._client.delete(f"/databases/{database_id}")
+            self._raise_for_status(
+                response,
+                f"delete database failed for {database_name}",
+            )
+            LOGGER.warning(
+                "rolled back Databasus registration database=%s databasus_id=%s",
+                database_name,
+                database_id,
+            )
+        except Exception:
+            LOGGER.exception(
+                "failed to delete Databasus registration; manual cleanup required "
+                "database=%s databasus_id=%s",
+                database_name,
+                database_id,
+            )
+
     def trigger_backup(self, database_id: str) -> None:
         response = self._client.post(
             "/backups",
@@ -470,6 +491,7 @@ def provision_database(
         readonly_credentials.username,
     )
 
+    database_id: str | None = None
     try:
         database_id = client.create_database(readonly_credentials)
         LOGGER.info(
@@ -484,6 +506,11 @@ def provision_database(
             database_id,
         )
     except Exception:
+        if database_id is not None:
+            client.delete_database(
+                database_id=database_id,
+                database_name=database_name,
+            )
         drop_role(
             config,
             RoleToDrop(
@@ -493,6 +520,7 @@ def provision_database(
         )
         raise
 
+    assert database_id is not None
     return ProvisionedDatabase(
         key=key,
         databasus_id=database_id,
