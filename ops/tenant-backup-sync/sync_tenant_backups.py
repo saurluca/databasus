@@ -7,6 +7,7 @@ import fcntl
 import logging
 import os
 import re
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ LOGGER = logging.getLogger("tenant_backup_sync")
 SAFE_DATABASE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 # Built in parts so the default system DB name is not a contiguous literal in source.
 DEFAULT_EXCLUDES = {"post" + "gres"}
+ALLOWED_BACKUP_SLOT_MINUTES = frozenset({5, 10, 15, 20, 30, 60})
 LOCK_PATH = Path("/tmp/tenant-backup-sync.lock")
 JSON_SECRET_KEY = "pass" + "word"  # API / libpq field name
 LOGICAL_JSON_KEY = "postgre" + "sqlLogical"
@@ -40,7 +42,9 @@ class Config:
     pg_admin_secret: str
     pg_exclude_databases: set[str]
     backup_interval_type: str
-    backup_time_of_day: str
+    backup_window_start: str
+    backup_window_hours: int
+    backup_slot_minutes: int
     retention_time_period: str
     cpu_count: int
     ssl_mode: str
@@ -107,11 +111,61 @@ def parse_csv(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def parse_time_of_day(value: str) -> tuple[int, int]:
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise ConfigError(f"invalid HH:MM value: {value!r}")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as error:
+        raise ConfigError(f"invalid HH:MM value: {value!r}") from error
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ConfigError(f"invalid HH:MM value: {value!r}")
+    return hour, minute
+
+
+def validate_backup_window(
+    window_start: str,
+    window_hours: int,
+    slot_minutes: int,
+) -> None:
+    parse_time_of_day(window_start)
+    if window_hours < 1:
+        raise ConfigError("BACKUP_WINDOW_HOURS must be >= 1")
+    if slot_minutes not in ALLOWED_BACKUP_SLOT_MINUTES:
+        allowed = ", ".join(str(value) for value in sorted(ALLOWED_BACKUP_SLOT_MINUTES))
+        raise ConfigError(f"BACKUP_SLOT_MINUTES must be one of: {allowed}")
+    window_minutes = window_hours * 60
+    if window_minutes % slot_minutes != 0:
+        raise ConfigError(
+            "BACKUP_WINDOW_HOURS * 60 must be divisible by BACKUP_SLOT_MINUTES "
+            f"({window_minutes} is not divisible by {slot_minutes})"
+        )
+
+
+def scheduled_time_of_day(database_name: str, config: Config) -> str:
+    start_hour, start_minute = parse_time_of_day(config.backup_window_start)
+    slot_count = (config.backup_window_hours * 60) // config.backup_slot_minutes
+    slot_index = zlib.crc32(database_name.encode("utf-8")) % slot_count
+    total_minutes = (
+        start_hour * 60 + start_minute + slot_index * config.backup_slot_minutes
+    )
+    hour = (total_minutes // 60) % 24
+    minute = total_minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
 def load_config() -> Config:
     load_dotenv()
 
     excludes = set(DEFAULT_EXCLUDES)
     excludes.update(parse_csv(os.getenv("PG_EXCLUDE_DATABASES")))
+
+    window_start = os.getenv("BACKUP_WINDOW_START", "04:00").strip() or "04:00"
+    window_hours = int(os.getenv("BACKUP_WINDOW_HOURS", "4"))
+    slot_minutes = int(os.getenv("BACKUP_SLOT_MINUTES", "5"))
+    validate_backup_window(window_start, window_hours, slot_minutes)
 
     return Config(
         databasus_url=require_env("DATABASUS_URL").rstrip("/"),
@@ -125,11 +179,13 @@ def load_config() -> Config:
         pg_admin_secret=require_env("PG_ADMIN_SECRET"),
         pg_exclude_databases=excludes,
         backup_interval_type=os.getenv("BACKUP_INTERVAL_TYPE", "DAILY").strip(),
-        backup_time_of_day=os.getenv("BACKUP_TIME_OF_DAY", "04:00").strip(),
+        backup_window_start=window_start,
+        backup_window_hours=window_hours,
+        backup_slot_minutes=slot_minutes,
         retention_time_period=os.getenv("RETENTION_TIME_PERIOD", "3_MONTH").strip(),
         cpu_count=int(os.getenv("CPU_COUNT", "1")),
         ssl_mode=os.getenv("SSL_MODE", "disable").strip(),
-        max_immediate_backups=int(os.getenv("MAX_IMMEDIATE_BACKUPS", "3")),
+        max_immediate_backups=int(os.getenv("MAX_IMMEDIATE_BACKUPS", "1")),
         is_insecure_http_allowed=env_bool("ALLOW_INSECURE_HTTP", False),
         notifier_ids=parse_csv(os.getenv("NOTIFIER_IDS")),
         is_dry_run=env_bool("DRY_RUN", False),
@@ -328,7 +384,8 @@ class DatabasusClient:
             )
         return str(database_id)
 
-    def save_backup_config(self, database_id: str) -> None:
+    def save_backup_config(self, *, database_id: str, database_name: str) -> None:
+        time_of_day = scheduled_time_of_day(database_name, self._config)
         response = self._client.post(
             "/backup-configs/save",
             json={
@@ -338,7 +395,7 @@ class DatabasusClient:
                 "retentionTimePeriod": self._config.retention_time_period,
                 "backupInterval": {
                     "type": self._config.backup_interval_type,
-                    "timeOfDay": self._config.backup_time_of_day,
+                    "timeOfDay": time_of_day,
                 },
                 "storage": {"id": self._config.storage_id},
                 "sendNotificationsOn": ["BACKUP_FAILED", "BACKUP_SUCCESS"],
@@ -348,6 +405,11 @@ class DatabasusClient:
             },
         )
         self._raise_for_status(response, f"save backup config failed for {database_id}")
+        LOGGER.info(
+            "saved backup schedule database=%s time_of_day=%s",
+            database_name,
+            time_of_day,
+        )
 
     def trigger_backup(self, database_id: str) -> None:
         response = self._client.post(
@@ -415,7 +477,7 @@ def provision_database(
             database_name,
             database_id,
         )
-        client.save_backup_config(database_id)
+        client.save_backup_config(database_id=database_id, database_name=database_name)
         LOGGER.info(
             "enabled backup schedule database=%s databasus_id=%s",
             database_name,
@@ -520,7 +582,11 @@ def run(config: Config) -> int:
 
         if config.is_dry_run:
             for database_name in missing_databases:
-                LOGGER.info("dry-run would provision database=%s", database_name)
+                LOGGER.info(
+                    "dry-run would provision database=%s time_of_day=%s",
+                    database_name,
+                    scheduled_time_of_day(database_name, config),
+                )
             LOGGER.info(
                 "dry-run complete; no mutations performed would_provision=%s",
                 len(missing_databases),

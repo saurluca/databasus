@@ -20,7 +20,7 @@ chmod 600 .env
 uv run sync_tenant_backups.py
 ```
 
-Dry-run (lists missing databases; no Databasus writes and no role creation):
+Dry-run (lists missing databases and their would-be `time_of_day`; no Databasus writes and no role creation):
 
 ```bash
 DRY_RUN=true uv run sync_tenant_backups.py
@@ -42,14 +42,26 @@ ALLOW_INSECURE_HTTP=true DATABASUS_URL=http://127.0.0.1:4005 uv run sync_tenant_
 | `STORAGE_ID` | Shared backup storage UUID |
 | `PG_HOST` / `PG_PORT` / `PG_ADMIN_USER` / `PG_ADMIN_SECRET` | Admin connection with `CREATEROLE` |
 
-Defaults: daily backups at `04:00`, `3_MONTH` retention, `MAX_IMMEDIATE_BACKUPS=3`.
+Schedule defaults for **newly registered** databases:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BACKUP_INTERVAL_TYPE` | `DAILY` | Databasus interval type |
+| `BACKUP_WINDOW_START` | `04:00` | Start of the daily schedule window (`HH:MM`) |
+| `BACKUP_WINDOW_HOURS` | `4` | Window length in hours (≥ 1) |
+| `BACKUP_SLOT_MINUTES` | `5` | Slot size; one of `5`, `10`, `15`, `20`, `30`, `60` |
+| `MAX_IMMEDIATE_BACKUPS` | `1` | Cap on first backups triggered in this run |
+
+`timeOfDay` is derived as `crc32(database_name) % slot_count` inside the window (stable across re-runs). With the defaults that is 48 slots across `04:00`–`07:55`. Already-registered databases are left unchanged (including any existing `02:00`–`04:00` schedules).
+
+Other defaults: `3_MONTH` retention.
 
 ## Behavior
 
 1. Lists host databases with `datallowconn AND NOT datistemplate`
 2. Skips the default system DB, anything in `PG_EXCLUDE_DATABASES`, and names outside `^[A-Za-z0-9_-]+$`
 3. Diffs against Databasus on `(host, port, database)`
-4. For each missing DB: create read-only user → register → enable backup config
+4. For each missing DB: create read-only user → register → enable backup config with a hash-staggered `timeOfDay`
 5. On create/config failure: drops the just-created role (logs username if drop fails)
 6. Triggers at most `MAX_IMMEDIATE_BACKUPS` first backups sequentially; the rest wait for the schedule
 
@@ -57,8 +69,10 @@ Overlapping cron runs exit immediately via `/tmp/tenant-backup-sync.lock`.
 
 ## Cron example
 
+Prefer running after the overnight backup peak so new first-backups do not pile onto it:
+
 ```cron
-*/15 * * * * cd /path/to/repo/ops/tenant-backup-sync && /path/to/uv run sync_tenant_backups.py >> /var/log/tenant-backup-sync.log 2>&1
+30 8 * * * cd /path/to/repo/ops/tenant-backup-sync && /path/to/uv run sync_tenant_backups.py >> /var/log/tenant-backup-sync.log 2>&1
 ```
 
 ## Notes
@@ -66,4 +80,6 @@ Overlapping cron runs exit immediately via `/tmp/tenant-backup-sync.lock`.
 - Prefer a dedicated Databasus automation user; sign-in JWTs are long-lived.
 - The automation account needs workspace Owner, Admin, or Member.
 - Secrets and tokens are never logged.
+- This script does not reschedule already-registered databases.
+- Heavy tenants can still be excluded via `PG_EXCLUDE_DATABASES` or adjusted in the Databasus UI.
 - This script does not clean up orphaned `databasus-*` roles from earlier manual runs.
