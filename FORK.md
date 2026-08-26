@@ -60,7 +60,7 @@ Konfiguration in der **Server-Compose-Datei** (nicht im Dockerfile-Image selbst 
 
 - Tabellennamen mit Großbuchstaben müssen **quoted** sein: `public."Artikelstatistik"`.
 - Wildcards (`*`, `?`) werden intern so normalisiert, dass Anführungszeichen bei Pattern-Matching nicht wörtlich mitgematcht werden.
-- Code: `backend/internal/config/config.go`, Anwendung in `backend/internal/features/backups/backups/usecases/logical/pg/create_backup_uc.go`.
+- Code: `backend/internal/config/config.go`; Anwendung im Logical-Backup-Use-Case `create_backup_uc.go` (Unterordner `usecases/logical/…`).
 - Die Liste in `docker-compose.server.yml` ist produktionskritisch. Entfernen oder leeren → riesige Tabellen landen wieder im Backup.
 
 **Ändern der Ausschlussliste:**
